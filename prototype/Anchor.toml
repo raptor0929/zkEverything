@@ -1,0 +1,20 @@
+[toolchain]
+anchor_version = "0.32.0"
+package_manager = "yarn"
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.localnet]
+ghost_vault = "GhVt1pV8XFwUmpaxQQGkR3f5pXBuXuNmQJhSsrBHe2TS"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "localnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "yarn run ts-mocha --esm -p ./tsconfig.json -t 1000000 \"tests/**/*.ts\""
