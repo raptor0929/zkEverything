@@ -22,3 +22,5 @@ anchor-lang = "0.32.0"
 # can't parse hashbrown 0.17's edition=2024 Cargo.toml. indexmap 2.7.x pulls in
 # hashbrown 0.15.x (edition=2021) instead.
 indexmap = "~2.7"
+solana-secp256k1-recover = "2.2.1"
+sha3 = { version = "0.10", default-features = false }

@@ -222,6 +222,38 @@ export async function generateRedemptionProof(
 }
 
 // ==============================================================================
+// 4b. SOLANA-SPECIFIC REDEMPTION PROOF
+// ==============================================================================
+
+/**
+ * Builds the 65-byte spend signature for a Solana redeem instruction.
+ * Message = keccak256("Pay to RAW: " || recipientPubkeyBytes[32])
+ * Returns sig65 = r(32) ‖ s(32) ‖ v(1) with v = recoveryBit + 27 (EVM convention).
+ */
+export function generateSolanaSpendSig(
+    spendPriv: Uint8Array,
+    recipientPubkeyBytes: Uint8Array, // 32-byte Solana pubkey
+): Uint8Array {
+    const prefix   = Buffer.from('Pay to RAW: ', 'utf-8'); // 12 bytes
+    const msgHash  = keccak256(new Uint8Array([...prefix, ...recipientPubkeyBytes]));
+
+    const sigResult = secp256k1.sign(msgHash, spendPriv, {
+        lowS: true,
+        prehash: false,
+        format: 'recovered',
+    }) as unknown as Uint8Array;
+
+    // format:'recovered' → [recoveryBit(1), r(32), s(32)]
+    const recoveryBit = sigResult[0]; // 0 or 1
+    const rsBytes     = sigResult.slice(1); // 64 bytes r‖s
+
+    const sig65 = new Uint8Array(65);
+    sig65.set(rsBytes, 0);
+    sig65[64] = recoveryBit + 27; // EVM convention (27 or 28)
+    return sig65;
+}
+
+// ==============================================================================
 // 5. VERIFICATION
 // ==============================================================================
 

@@ -1,9 +1,172 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
+use sha3::{Digest, Keccak256};
+use solana_secp256k1_recover::secp256k1_recover;
 
 declare_id!("GhVt1pV8XFwUmpaxQQGkR3f5pXBuXuNmQJhSsrBHe2TS");
 
 const DENOMINATION: u64 = 10_000_000; // 0.01 SOL
+const ALT_BN128_PAIRING_OUTPUT_LEN: usize = 32;
+
+extern "C" {
+    fn sol_alt_bn128_group_op(
+        group_op: u64,
+        input: *const u8,
+        input_size: u64,
+        result: *mut u8,
+    ) -> u64;
+    fn sol_big_mod_exp(params: *const u8, result: *mut u8) -> u64;
+}
+
+// Layout matches the Solana SBF C SDK BigModExpParam struct.
+#[repr(C)]
+struct BigModExpParam {
+    base: *const u8,
+    base_len: u64,
+    exponent: *const u8,
+    exponent_len: u64,
+    modulus: *const u8,
+    modulus_len: u64,
+}
+
+// BN254 field prime (big-endian, 32 bytes).
+const FP: [u8; 32] = [
+    0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29,
+    0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81, 0x58, 0x5d,
+    0x97, 0x81, 0x6a, 0x91, 0x68, 0x71, 0xca, 0x8d,
+    0x3c, 0x20, 0x8c, 0x16, 0xd8, 0x7c, 0xfd, 0x47,
+];
+
+// (FP - 1) / 2 — used for Euler's quadratic-residue criterion.
+const FP_MINUS1_OVER2: [u8; 32] = [
+    0x18, 0x32, 0x27, 0x39, 0x70, 0x98, 0xd0, 0x14,
+    0xdc, 0x28, 0x22, 0xdb, 0x40, 0xc0, 0xac, 0x2e,
+    0xcb, 0xc0, 0xb5, 0x48, 0xb4, 0x38, 0xe5, 0x46,
+    0x9e, 0x10, 0x46, 0x0b, 0x6c, 0x3e, 0x7e, 0xa3,
+];
+
+// (FP + 1) / 4 — square-root exponent valid because FP ≡ 3 (mod 4).
+const FP_PLUS1_OVER4: [u8; 32] = [
+    0x0c, 0x19, 0x13, 0x9c, 0xb8, 0x4c, 0x68, 0x0a,
+    0x6e, 0x14, 0x11, 0x6d, 0xa0, 0x60, 0x56, 0x17,
+    0x65, 0xe0, 0x5a, 0xa4, 0x5a, 0x1c, 0x72, 0xa3,
+    0x4f, 0x08, 0x23, 0x05, 0xb6, 0x1f, 0x3f, 0x52,
+];
+
+// EIP-197 G2 generator constant [X_imag, X_real, Y_imag, Y_real].
+fn g2_gen() -> [u8; 128] {
+    [
+        0x19, 0x8e, 0x93, 0x93, 0x92, 0x0d, 0x48, 0x3a,
+        0x72, 0x60, 0xbf, 0xb7, 0x31, 0xfb, 0x5d, 0x25,
+        0xf1, 0xaa, 0x49, 0x33, 0x35, 0xa9, 0xe7, 0x12,
+        0x97, 0xe4, 0x85, 0xb7, 0xae, 0xf3, 0x12, 0xc2,
+        0x18, 0x00, 0xde, 0xef, 0x12, 0x1f, 0x1e, 0x76,
+        0x42, 0x6a, 0x00, 0x66, 0x5e, 0x5c, 0x44, 0x79,
+        0x67, 0x43, 0x22, 0xd4, 0xf7, 0x5e, 0xda, 0xdd,
+        0x46, 0xde, 0xbd, 0x5c, 0xd9, 0x92, 0xf6, 0xed,
+        0x09, 0x06, 0x89, 0xd0, 0x58, 0x5f, 0xf0, 0x75,
+        0xec, 0x9e, 0x99, 0xad, 0x69, 0x0c, 0x33, 0x95,
+        0xbc, 0x4b, 0x31, 0x33, 0x70, 0xb3, 0x8e, 0xf3,
+        0x55, 0xac, 0xda, 0xdc, 0xd1, 0x22, 0x97, 0x5b,
+        0x12, 0xc8, 0x5e, 0xa5, 0xdb, 0x8c, 0x6d, 0xeb,
+        0x4a, 0xab, 0x71, 0x80, 0x8d, 0xcb, 0x40, 0x8f,
+        0xe3, 0xd1, 0xe7, 0x69, 0x0c, 0x43, 0xd3, 0x7b,
+        0x4c, 0xe6, 0xcc, 0x01, 0x66, 0xfa, 0x7d, 0xaa,
+    ]
+}
+
+// Invoke sol_big_mod_exp: computes base^exponent mod FP (big-endian).
+fn bn254_pow_mod(base: &[u8; 32], exponent: &[u8]) -> [u8; 32] {
+    let param = BigModExpParam {
+        base: base.as_ptr(),
+        base_len: 32,
+        exponent: exponent.as_ptr(),
+        exponent_len: exponent.len() as u64,
+        modulus: FP.as_ptr(),
+        modulus_len: 32,
+    };
+    let mut result = [0u8; 32];
+    unsafe {
+        sol_big_mod_exp(&param as *const BigModExpParam as *const u8, result.as_mut_ptr());
+    }
+    result
+}
+
+// Reduces a 32-byte big-endian value mod FP (≤ 5 subtractions since 2^256 < 6·FP).
+fn reduce_mod_fp(mut x: [u8; 32]) -> [u8; 32] {
+    while &x >= &FP {
+        let mut borrow = 0i16;
+        for i in (0..32).rev() {
+            let d = x[i] as i16 - FP[i] as i16 - borrow;
+            x[i] = d.rem_euclid(256) as u8;
+            borrow = if d < 0 { 1 } else { 0 };
+        }
+    }
+    x
+}
+
+// Adds a small constant (≤ 255) to a 32-byte big-endian value and reduces mod FP.
+fn add_small_mod_fp(mut x: [u8; 32], small: u8) -> [u8; 32] {
+    let mut carry = small as u16;
+    for i in (0..32).rev() {
+        if carry == 0 { break; }
+        let s = x[i] as u16 + carry;
+        x[i] = s as u8;
+        carry = s >> 8;
+    }
+    reduce_mod_fp(x)
+}
+
+// Negates a G1 y-coordinate: FP - y (big-endian).
+fn negate_fp(y: &[u8; 32]) -> [u8; 32] {
+    let mut result = [0u8; 32];
+    let mut borrow = 0i16;
+    for i in (0..32).rev() {
+        let d = FP[i] as i16 - y[i] as i16 - borrow;
+        result[i] = d.rem_euclid(256) as u8;
+        borrow = if d < 0 { 1 } else { 0 };
+    }
+    result
+}
+
+// keccak256 try-and-increment hash-to-curve for BN254 G1, matching the EVM reference.
+// Returns the 64-byte G1 point (x BE || y BE) on success.
+fn hash_to_curve_bn254(nullifier: &[u8; 20]) -> Result<[u8; 64]> {
+    let one = { let mut a = [0u8; 32]; a[31] = 1; a };
+    let mut payload = [0u8; 24]; // 20-byte nullifier + 4-byte counter (BE)
+    payload[..20].copy_from_slice(nullifier);
+
+    for counter in 0u32..1000 {
+        payload[20..].copy_from_slice(&counter.to_be_bytes());
+
+        let hash: [u8; 32] = {
+            let mut h = Keccak256::new();
+            h.update(&payload);
+            h.finalize().into()
+        };
+
+        let x = reduce_mod_fp(hash);
+
+        // y² = x³ + 3 mod FP
+        let x_cubed = bn254_pow_mod(&x, &[3u8]);
+        let y_sq = add_small_mod_fp(x_cubed, 3);
+
+        // Euler criterion: y²^((FP−1)/2) mod FP == 1
+        let euler = bn254_pow_mod(&y_sq, &FP_MINUS1_OVER2);
+        if euler != one {
+            continue;
+        }
+
+        // y = y²^((FP+1)/4) mod FP
+        let y = bn254_pow_mod(&y_sq, &FP_PLUS1_OVER4);
+
+        let mut point = [0u8; 64];
+        point[..32].copy_from_slice(&x);
+        point[32..].copy_from_slice(&y);
+        return Ok(point);
+    }
+    err!(VaultError::HashToCurveFailed)
+}
 
 #[program]
 pub mod ghost_vault {
@@ -54,6 +217,92 @@ pub mod ghost_vault {
         require!(record.state == 0, VaultError::NotPending);
         record.mint_sig = mint_sig;
         record.state = 1; // Announced
+        Ok(())
+    }
+
+    /// Redeem a token: verify ECDSA spend proof + BLS pairing, burn the nullifier,
+    /// close the deposit PDA, and transfer all SOL to the recipient.
+    ///
+    /// Parameters
+    /// ----------
+    /// recipient     – Solana pubkey that receives the funds
+    /// spend_sig     – 65-byte secp256k1 signature: r(32) ‖ s(32) ‖ v(1), v = 27 or 28
+    /// nullifier     – 20-byte spend address (revealed here for the first time)
+    /// unblinded_sig – 64-byte unblinded BLS signature S = r⁻¹·S' (G1 point, EIP-197)
+    /// deposit_id    – 20-byte blind address used to find the deposit PDA
+    pub fn redeem(
+        ctx: Context<Redeem>,
+        recipient: Pubkey,
+        spend_sig: [u8; 65],
+        nullifier: [u8; 20],
+        unblinded_sig: [u8; 64],
+        deposit_id: [u8; 20],
+    ) -> Result<()> {
+        // ── 1. ECDSA: recover signer from spend_sig; assert == nullifier ──────
+        let msg_hash: [u8; 32] = {
+            let mut h = Keccak256::new();
+            h.update(b"Pay to RAW: ");
+            h.update(recipient.as_ref());
+            h.finalize().into()
+        };
+
+        // EVM convention: v ∈ {27, 28} → Solana recovery_id ∈ {0, 1}
+        let recovery_id = spend_sig[64].wrapping_sub(27);
+        require!(recovery_id <= 1, VaultError::InvalidECDSA);
+
+        let mut sig64 = [0u8; 64];
+        sig64.copy_from_slice(&spend_sig[..64]);
+
+        let recovered = secp256k1_recover(&msg_hash, recovery_id, &sig64)
+            .map_err(|_| error!(VaultError::InvalidECDSA))?;
+
+        // keccak256(uncompressed-pubkey-64-bytes)[12..] == Ethereum address
+        let pub_hash: [u8; 32] = {
+            let mut h = Keccak256::new();
+            h.update(&recovered.0); // 64-byte uncompressed pubkey (no 0x04 prefix)
+            h.finalize().into()
+        };
+        require!(&pub_hash[12..] == &nullifier, VaultError::InvalidECDSA);
+
+        // ── 2. State check ───────────────────────────────────────────────────
+        require!(ctx.accounts.deposit.state == 1, VaultError::NotAnnounced);
+
+        // ── 3. Hash-to-curve: Y = H(nullifier) ──────────────────────────────
+        let y_point = hash_to_curve_bn254(&nullifier)?; // [x(32), y(32)] BE
+
+        // ── 4. BLS pairing: e(S, G2_gen) ⊗ e(−Y, mint_pk) == 1 ─────────────
+        // Equivalent to e(S, G2_gen) == e(Y, mint_pk).
+        // Negating Y: keep x, replace y with FP − y.
+        let y_x: &[u8; 32] = y_point[..32].try_into().unwrap();
+        let y_y: &[u8; 32] = y_point[32..].try_into().unwrap();
+        let neg_y_y = negate_fp(y_y);
+
+        let mut pairing_input = [0u8; 384];
+        pairing_input[..64].copy_from_slice(&unblinded_sig);         // S
+        pairing_input[64..192].copy_from_slice(&g2_gen());           // G2_gen
+        pairing_input[192..224].copy_from_slice(y_x);                // −Y.x (x unchanged)
+        pairing_input[224..256].copy_from_slice(&neg_y_y);           // −Y.y
+        pairing_input[256..384].copy_from_slice(&ctx.accounts.mint_state.mint_pk); // PK_mint
+
+        let mut pairing_result = [0u8; ALT_BN128_PAIRING_OUTPUT_LEN];
+        let ret = unsafe {
+            sol_alt_bn128_group_op(
+                3,
+                pairing_input.as_ptr(),
+                384,
+                pairing_result.as_mut_ptr(),
+            )
+        };
+        require!(ret == 0, VaultError::InvalidBLS);
+        require!(pairing_result[31] == 1, VaultError::InvalidBLS);
+
+        // ── 5. Nullifier PDA init (Anchor creates it; fails if already exists) ─
+        // (double-spend protection via `init` on nullifier_record account)
+
+        // ── 6. Close deposit PDA → lamports go to recipient_account ──────────
+        // Handled by `close = recipient_account` on the deposit account constraint.
+
+        let _ = deposit_id; // consumed by account seeds, not needed in instruction body
         Ok(())
     }
 }
@@ -109,6 +358,39 @@ pub struct Announce<'info> {
     pub deposit: Account<'info, DepositRecord>,
 }
 
+#[derive(Accounts)]
+#[instruction(recipient: Pubkey, spend_sig: [u8; 65], nullifier: [u8; 20], unblinded_sig: [u8; 64], deposit_id: [u8; 20])]
+pub struct Redeem<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    /// CHECK: receives all redeemed SOL (verified by address constraint)
+    #[account(mut, address = recipient)]
+    pub recipient_account: UncheckedAccount<'info>,
+
+    #[account(seeds = [b"state"], bump = mint_state.bump)]
+    pub mint_state: Account<'info, MintState>,
+
+    #[account(
+        mut,
+        seeds = [b"deposit", deposit_id.as_ref()],
+        bump = deposit.bump,
+        close = recipient_account,
+    )]
+    pub deposit: Account<'info, DepositRecord>,
+
+    #[account(
+        init,
+        payer = payer,
+        space = 8 + NullifierRecord::LEN,
+        seeds = [b"nullifier", nullifier.as_ref()],
+        bump,
+    )]
+    pub nullifier_record: Account<'info, NullifierRecord>,
+
+    pub system_program: Program<'info, System>,
+}
+
 // ── Account data ──────────────────────────────────────────────────────────────
 
 #[account]
@@ -133,10 +415,27 @@ impl DepositRecord {
     pub const LEN: usize = 64 + 64 + 1 + 1;
 }
 
+#[account]
+pub struct NullifierRecord {
+    pub bump: u8,
+}
+
+impl NullifierRecord {
+    pub const LEN: usize = 1;
+}
+
 // ── Errors ────────────────────────────────────────────────────────────────────
 
 #[error_code]
 pub enum VaultError {
     #[msg("Deposit is not in Pending state")]
     NotPending,
+    #[msg("Deposit is not in Announced state")]
+    NotAnnounced,
+    #[msg("ECDSA recovery failed or address mismatch")]
+    InvalidECDSA,
+    #[msg("BLS pairing check failed")]
+    InvalidBLS,
+    #[msg("hash-to-curve found no valid point in 1000 iterations")]
+    HashToCurveFailed,
 }
