@@ -1,4 +1,4 @@
-import mcl from 'mcl-wasm';
+import * as mcl from 'mcl-wasm';
 import { keccak256 } from 'ethereum-cryptography/keccak.js';
 
 // BN254 Curve Constants

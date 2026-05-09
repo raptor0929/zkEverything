@@ -2,10 +2,9 @@
   "compilerOptions": {
     "types": ["mocha", "chai"],
     "typeRoots": ["./node_modules/@types"],
-    "lib": ["ES2022"],
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "target": "ES2022",
+    "lib": ["es2015"],
+    "module": "commonjs",
+    "target": "es6",
     "esModuleInterop": true,
     "skipLibCheck": true
   }

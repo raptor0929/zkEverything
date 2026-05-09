@@ -1,10 +1,10 @@
 import { keccak256 } from 'ethereum-cryptography/keccak.js';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
-import mcl from 'mcl-wasm';
+import * as mcl from 'mcl-wasm';
 import {
     hashToCurveBN254, multiplyBN254,
     modularInverse, verifyPairingBN254, getG2Generator, CURVE_ORDER,
-} from './bn254-crypto.js';
+} from './bn254-crypto';
 
 // ==============================================================================
 // ERROR HIERARCHY
