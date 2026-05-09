@@ -1,0 +1,20 @@
+[workspace]
+members = [
+    "programs/*"
+]
+resolver = "2"
+
+# Solana platform-tools v1.46/v1.47/v1.48/v1.49 ship Cargo 1.84 which can't
+# parse crates using `edition = "2024"`. toml_parser 1.1.2 is the offender.
+# This local vendor copy has the same source but declares edition = "2021".
+[patch.crates-io]
+toml_parser = { path = "vendor/toml_parser" }
+
+[profile.release]
+overflow-checks = true
+lto = "fat"
+codegen-units = 1
+[profile.release.build-override]
+opt-level = 3
+incremental = false
+codegen-units = 1
