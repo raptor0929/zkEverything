@@ -42,6 +42,10 @@ const [mintStatePDA] = PublicKey.findProgramAddressSync(
     [Buffer.from('state')],
     PROGRAM_ID,
 );
+const [vaultPDA] = PublicKey.findProgramAddressSync(
+    [Buffer.from('vault')],
+    PROGRAM_ID,
+);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -81,23 +85,27 @@ app.get('/health', async (_req: Request, res: Response) => {
  * The relayer is the `payer` — not the original depositor — so no on-chain
  * signature links the depositing wallet to this transaction.
  *
+ * No deposit PDA is referenced: the redeem tx draws from the shared pool vault,
+ * so a block explorer sees zero link between any deposit-specific account and
+ * this transaction.
+ *
  * Body (all byte arrays as lowercase hex strings):
  * {
  *   recipient:     string  — base58 Solana pubkey of the destination wallet
  *   spend_sig:     string  — 65-byte ECDSA signature (r‖s‖v, v=27 or 28)
  *   nullifier:     string  — 20-byte spend address (hex)
  *   unblinded_sig: string  — 64-byte unblinded BLS signature S (hex)
- *   deposit_id:    string  — 20-byte blind address used as deposit PDA seed (hex)
+ *   y_point:       string  — 64-byte G1 point Y = H(spend_address) (hex)
  * }
  *
  * Response: { signature: string } or { error: string }
  */
 app.post('/relay', async (req: Request, res: Response) => {
     try {
-        const { recipient, spend_sig, nullifier, unblinded_sig, deposit_id } = req.body;
+        const { recipient, spend_sig, nullifier, unblinded_sig, y_point } = req.body;
 
         // ── Validate presence ────────────────────────────────────────────────
-        for (const [k, v] of Object.entries({ recipient, spend_sig, nullifier, unblinded_sig, deposit_id })) {
+        for (const [k, v] of Object.entries({ recipient, spend_sig, nullifier, unblinded_sig, y_point })) {
             if (!v) return res.status(400).json({ error: `Missing field: ${k}` }) as unknown as void;
         }
 
@@ -106,33 +114,18 @@ app.post('/relay', async (req: Request, res: Response) => {
         try { recipientPubkey = new PublicKey(recipient); }
         catch { return res.status(400).json({ error: 'Invalid recipient pubkey' }) as unknown as void; }
 
-        const spendSigBytes    = hexToU8(spend_sig,     65, 'spend_sig');
-        const nullifierBytes   = hexToU8(nullifier,     20, 'nullifier');
+        const spendSigBytes     = hexToU8(spend_sig,     65, 'spend_sig');
+        const nullifierBytes    = hexToU8(nullifier,     20, 'nullifier');
         const unblindedSigBytes = hexToU8(unblinded_sig, 64, 'unblinded_sig');
-        const depositIdBytes   = hexToU8(deposit_id,    20, 'deposit_id');
+        const yPointBytes       = hexToU8(y_point,       64, 'y_point');
 
         // ── Derive PDAs ──────────────────────────────────────────────────────
-        const [depositPDA] = PublicKey.findProgramAddressSync(
-            [Buffer.from('deposit'), Buffer.from(depositIdBytes)],
-            PROGRAM_ID,
-        );
         const [nullifierPDA] = PublicKey.findProgramAddressSync(
             [Buffer.from('nullifier'), Buffer.from(nullifierBytes)],
             PROGRAM_ID,
         );
 
         // ── Pre-flight checks ────────────────────────────────────────────────
-        const depositAccount = await (program.account as any).depositRecord.fetch(depositPDA)
-            .catch(() => null);
-        if (!depositAccount) {
-            return res.status(400).json({ error: 'Deposit account not found' }) as unknown as void;
-        }
-        if (depositAccount.state !== 1) {
-            return res.status(400).json({
-                error: `Deposit not in Announced state (state=${depositAccount.state})`,
-            }) as unknown as void;
-        }
-
         const nullifierInfo = await connection.getAccountInfo(nullifierPDA);
         if (nullifierInfo) {
             return res.status(409).json({ error: 'Nullifier already spent' }) as unknown as void;
@@ -153,13 +146,13 @@ app.post('/relay', async (req: Request, res: Response) => {
                 Array.from(spendSigBytes),
                 Array.from(nullifierBytes),
                 Array.from(unblindedSigBytes),
-                Array.from(depositIdBytes),
+                Array.from(yPointBytes),
             )
             .accounts({
                 payer:            relayerKp.publicKey,  // ← relayer pays, not the user
                 recipientAccount: recipientPubkey,
                 mintState:        mintStatePDA,
-                deposit:          depositPDA,
+                vault:            vaultPDA,
                 nullifierRecord:  nullifierPDA,
                 systemProgram:    SystemProgram.programId,
             })

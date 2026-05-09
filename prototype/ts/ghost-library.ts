@@ -262,13 +262,17 @@ export interface RelayPayload {
     spend_sig:     string;   // hex 65 bytes
     nullifier:     string;   // hex 20 bytes
     unblinded_sig: string;   // hex 64 bytes
-    deposit_id:    string;   // hex 20 bytes
+    y_point:       string;   // hex 64 bytes — Y = H(spend_address), BLS validates it
 }
 
 /**
  * Builds the JSON payload to POST to a GhostVault relayer's /relay endpoint.
  * The relayer will sign and broadcast the redeem transaction — the user's wallet
  * never appears on-chain during the redemption, completing the privacy cycle.
+ *
+ * y_point (Y = H(spend_address)) is passed as a direct parameter instead of
+ * reading it from a deposit PDA, so the redeem tx has zero reference to any
+ * deposit-specific account address.
  */
 export function buildRelayPayload(
     secrets:      TokenSecrets,
@@ -278,7 +282,8 @@ export function buildRelayPayload(
     recipientBytes: Uint8Array,            // 32-byte raw pubkey (for ECDSA msg)
     serializeG1Fn: (p: import('mcl-wasm').G1) => Uint8Array,
 ): RelayPayload {
-    const S = unblindSignature(sPrime, r);
+    const Y     = hashToCurve(secrets.spend.addressBytes);
+    const S     = unblindSignature(sPrime, r);
     const sig65 = generateSolanaSpendSig(secrets.spend.priv, recipientBytes);
 
     return {
@@ -286,7 +291,7 @@ export function buildRelayPayload(
         spend_sig:     Buffer.from(sig65).toString('hex'),
         nullifier:     Buffer.from(secrets.spend.addressBytes).toString('hex'),
         unblinded_sig: Buffer.from(serializeG1Fn(S)).toString('hex'),
-        deposit_id:    Buffer.from(secrets.blind.addressBytes).toString('hex'),
+        y_point:       Buffer.from(serializeG1Fn(Y)).toString('hex'),
     };
 }
 

@@ -63,27 +63,29 @@ fn negate_fp(y: &[u8; 32]) -> [u8; 32] {
 pub mod ghost_vault {
     use super::*;
 
-    /// Store the mint BLS public key (G2 point, 128 bytes EIP-197 order) in a PDA.
+    /// Store the mint BLS public key and initialise the pool vault PDA.
     pub fn initialize(ctx: Context<Initialize>, mint_pk: [u8; 128]) -> Result<()> {
         let state = &mut ctx.accounts.mint_state;
         state.mint_pk = mint_pk;
         state.bump = ctx.bumps.mint_state;
+
+        let vault = &mut ctx.accounts.vault;
+        vault.bump = ctx.bumps.vault;
+
         Ok(())
     }
 
-    /// Lock 0.01 SOL and register a blinded G1 point and unblinded base point Y
-    /// for a given deposit ID.  Y = H(spend_address) is committed here so that
-    /// the redeem instruction can verify the BLS pairing without recomputing the
-    /// hash-to-curve on-chain (which would require sol_big_mod_exp).
+    /// Lock 0.01 SOL in the shared pool vault and register a blinded G1 point
+    /// for the deposit ID.  The deposit PDA no longer holds the denomination
+    /// — all SOL goes to the vault, so the redeem instruction has zero reference
+    /// to this account, eliminating the deposit-PDA lifecycle graph link.
     pub fn deposit(
         ctx: Context<Deposit>,
         _deposit_id: [u8; 20],
         blinded_point: [u8; 64],
-        y_point: [u8; 64],
     ) -> Result<()> {
         let record = &mut ctx.accounts.deposit;
         record.blinded_point = blinded_point;
-        record.y_point = y_point;
         record.mint_sig = [0u8; 64];
         record.state = 0; // Pending
         record.bump = ctx.bumps.deposit;
@@ -93,7 +95,7 @@ pub mod ghost_vault {
                 ctx.accounts.system_program.to_account_info(),
                 system_program::Transfer {
                     from: ctx.accounts.payer.to_account_info(),
-                    to: ctx.accounts.deposit.to_account_info(),
+                    to: ctx.accounts.vault.to_account_info(),
                 },
             ),
             DENOMINATION,
@@ -117,11 +119,11 @@ pub mod ghost_vault {
     }
 
     /// Redeem a token: verify ECDSA spend proof + BLS pairing, burn the nullifier,
-    /// close the deposit PDA, and transfer all SOL to the recipient.
+    /// and transfer DENOMINATION from the pool vault to the recipient.
     ///
-    /// Y = H(nullifier) was committed to the deposit record at deposit time.
-    /// The contract reads it from there and uses it for the BLS pairing check,
-    /// avoiding any on-chain hash-to-curve computation.
+    /// No deposit PDA is referenced — the redeem transaction has zero on-chain
+    /// link to any specific deposit.  Y = H(nullifier) is supplied by the caller;
+    /// the BLS pairing e(S, G2) == e(Y, PK) self-validates it.
     ///
     /// Parameters
     /// ----------
@@ -129,14 +131,14 @@ pub mod ghost_vault {
     /// spend_sig     – 65-byte secp256k1 signature: r(32) ‖ s(32) ‖ v(1), v = 27 or 28
     /// nullifier     – 20-byte spend address (revealed here for the first time)
     /// unblinded_sig – 64-byte unblinded BLS signature S = r⁻¹·S' (G1 point, EIP-197)
-    /// deposit_id    – 20-byte blind address used to find the deposit PDA
+    /// y_point       – 64-byte G1 point Y = H(spend_address), caller-supplied
     pub fn redeem(
         ctx: Context<Redeem>,
         recipient: Pubkey,
         spend_sig: [u8; 65],
         nullifier: [u8; 20],
         unblinded_sig: [u8; 64],
-        deposit_id: [u8; 20],
+        y_point: [u8; 64],
     ) -> Result<()> {
         // ── 1. ECDSA: recover signer from spend_sig; assert == nullifier ──────
         let msg_hash: [u8; 32] = {
@@ -164,17 +166,12 @@ pub mod ghost_vault {
         };
         require!(&pub_hash[12..] == &nullifier, VaultError::InvalidECDSA);
 
-        // ── 2. State check ───────────────────────────────────────────────────
-        require!(ctx.accounts.deposit.state == 1, VaultError::NotAnnounced);
-
-        // ── 3. Read Y from deposit record (committed at deposit time) ────────
-        let y_point = ctx.accounts.deposit.y_point;
+        // ── 2. BLS pairing: e(S, G2_gen) ⊗ e(−Y, mint_pk) == 1 ─────────────
+        // Caller supplies y_point; the pairing check self-validates it.
         let y_x: &[u8; 32] = y_point[..32].try_into().unwrap();
         let y_y: &[u8; 32] = y_point[32..].try_into().unwrap();
         let neg_y_y = negate_fp(y_y);
 
-        // ── 4. BLS pairing: e(S, G2_gen) ⊗ e(−Y, mint_pk) == 1 ─────────────
-        // Equivalent to e(S, G2_gen) == e(Y, mint_pk).
         let mut pairing_input = [0u8; 384];
         pairing_input[..64].copy_from_slice(&unblinded_sig);         // S
         pairing_input[64..192].copy_from_slice(&g2_gen());           // G2_gen
@@ -194,13 +191,17 @@ pub mod ghost_vault {
         require!(ret == 0, VaultError::InvalidBLS);
         require!(pairing_result[31] == 1, VaultError::InvalidBLS);
 
-        // ── 5. Nullifier PDA init (Anchor creates it; fails if already exists) ─
-        // (double-spend protection via `init` on nullifier_record account)
+        // ── 3. Nullifier PDA init (Anchor creates it; fails if already exists) ─
+        // Double-spend protection: if nullifier_record already exists, `init` fails.
 
-        // ── 6. Close deposit PDA → lamports go to recipient_account ──────────
-        // Handled by `close = recipient_account` on the deposit account constraint.
+        // ── 4. Transfer DENOMINATION from vault to recipient ─────────────────
+        require!(
+            ctx.accounts.vault.to_account_info().lamports() >= DENOMINATION,
+            VaultError::InsufficientVaultBalance,
+        );
+        **ctx.accounts.vault.to_account_info().try_borrow_mut_lamports()? -= DENOMINATION;
+        **ctx.accounts.recipient_account.to_account_info().try_borrow_mut_lamports()? += DENOMINATION;
 
-        let _ = deposit_id; // consumed by account seeds, not needed in instruction body
         Ok(())
     }
 }
@@ -221,6 +222,15 @@ pub struct Initialize<'info> {
     )]
     pub mint_state: Account<'info, MintState>,
 
+    #[account(
+        init_if_needed,
+        payer = authority,
+        space = 8 + VaultState::LEN,
+        seeds = [b"vault"],
+        bump,
+    )]
+    pub vault: Account<'info, VaultState>,
+
     pub system_program: Program<'info, System>,
 }
 
@@ -238,6 +248,9 @@ pub struct Deposit<'info> {
         bump,
     )]
     pub deposit: Account<'info, DepositRecord>,
+
+    #[account(mut, seeds = [b"vault"], bump = vault.bump)]
+    pub vault: Account<'info, VaultState>,
 
     pub system_program: Program<'info, System>,
 }
@@ -257,25 +270,20 @@ pub struct Announce<'info> {
 }
 
 #[derive(Accounts)]
-#[instruction(recipient: Pubkey, spend_sig: [u8; 65], nullifier: [u8; 20], unblinded_sig: [u8; 64], deposit_id: [u8; 20])]
+#[instruction(recipient: Pubkey, spend_sig: [u8; 65], nullifier: [u8; 20])]
 pub struct Redeem<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
 
-    /// CHECK: receives all redeemed SOL (verified by address constraint)
+    /// CHECK: receives redeemed SOL (enforced by address constraint)
     #[account(mut, address = recipient)]
     pub recipient_account: UncheckedAccount<'info>,
 
     #[account(seeds = [b"state"], bump = mint_state.bump)]
     pub mint_state: Account<'info, MintState>,
 
-    #[account(
-        mut,
-        seeds = [b"deposit", deposit_id.as_ref()],
-        bump = deposit.bump,
-        close = recipient_account,
-    )]
-    pub deposit: Account<'info, DepositRecord>,
+    #[account(mut, seeds = [b"vault"], bump = vault.bump)]
+    pub vault: Account<'info, VaultState>,
 
     #[account(
         init,
@@ -302,16 +310,24 @@ impl MintState {
 }
 
 #[account]
-pub struct DepositRecord {
-    pub blinded_point: [u8; 64],
-    pub y_point: [u8; 64],       // H(spend_address) committed at deposit time
-    pub mint_sig: [u8; 64],
-    pub state: u8,   // 0 = Pending, 1 = Announced
+pub struct VaultState {
     pub bump: u8,
 }
 
+impl VaultState {
+    pub const LEN: usize = 1;
+}
+
+#[account]
+pub struct DepositRecord {
+    pub blinded_point: [u8; 64],
+    pub mint_sig:      [u8; 64],
+    pub state:         u8,
+    pub bump:          u8,
+}
+
 impl DepositRecord {
-    pub const LEN: usize = 64 + 64 + 64 + 1 + 1;
+    pub const LEN: usize = 64 + 64 + 1 + 1; // = 130
 }
 
 #[account]
@@ -335,4 +351,6 @@ pub enum VaultError {
     InvalidECDSA,
     #[msg("BLS pairing check failed")]
     InvalidBLS,
+    #[msg("Vault has insufficient balance")]
+    InsufficientVaultBalance,
 }

@@ -9,16 +9,15 @@ import { initBN254, getG2Generator } from "../ts/bn254-crypto";
 import * as gl from "../ts/ghost-library";
 
 const DENOMINATION = 10_000_000; // 0.01 SOL
-const DEPOSIT_ACCOUNT_SIZE = 8 + 64 + 64 + 64 + 1 + 1; // discriminator + DepositRecord (blinded_point + y_point + mint_sig + state + bump)
+const DEPOSIT_ACCOUNT_SIZE = 8 + 130; // discriminator + DepositRecord (blinded_point + mint_sig + state + bump)
 
-// Master seed and token index shared across deposit / announce tests
-const MASTER_SEED = Buffer.from("test_master_seed_003");
-const TOKEN_INDEX = 0;
-
-// Separate seed for the self-contained redeem flow tests.
-// Incorporates the current timestamp so deposit / nullifier PDAs are always
+// Both seeds incorporate the current timestamp so all deposit/nullifier PDAs are
 // fresh on devnet — avoids "account already in use" on repeated runs.
-const REDEEM_SEED  = Buffer.from("test_master_seed_redeem_" + Date.now().toString());
+// Different prefixes ensure the two seed sets derive distinct deposit IDs.
+const TS          = Date.now().toString();
+const MASTER_SEED = Buffer.from("m_" + TS);
+const TOKEN_INDEX = 0;
+const REDEEM_SEED  = Buffer.from("r_" + TS);
 const REDEEM_INDEX = 0;
 
 describe("ghost_vault", () => {
@@ -28,6 +27,11 @@ describe("ghost_vault", () => {
 
     const [mintStatePDA] = PublicKey.findProgramAddressSync(
         [Buffer.from("state")],
+        program.programId,
+    );
+
+    const [vaultPDA] = PublicKey.findProgramAddressSync(
+        [Buffer.from("vault")],
         program.programId,
     );
 
@@ -41,7 +45,6 @@ describe("ghost_vault", () => {
         await initBN254();
 
         // Deterministic mint keypair: hash a fixed label into an Fr scalar.
-        // mcl.Fr.setHashOf hashes the string and reduces mod curve order.
         mintSk = new mcl.Fr();
         mintSk.setHashOf("ghost_vault_devnet_mint_key_v1");
         mintPk = mcl.mul(getG2Generator(), mintSk) as mcl.G2;
@@ -52,13 +55,18 @@ describe("ghost_vault", () => {
     it("initialize stores the mint BLS public key in the MintState PDA", async () => {
         const pkBytes = serializeG2(mintPk);
 
-        // init_if_needed: creates MintState on first run, updates the pk on subsequent runs.
+        // init_if_needed: creates MintState and VaultState on first run,
+        // updates the pk on subsequent runs.
         await program.methods
             .initialize(Array.from(pkBytes))
             .rpc();
 
         const state = await program.account.mintState.fetch(mintStatePDA);
         assert.deepEqual(Array.from(state.mintPk), Array.from(pkBytes));
+
+        // Vault PDA must exist after initialize.
+        const vaultInfo = await provider.connection.getAccountInfo(vaultPDA);
+        assert.isNotNull(vaultInfo, "vault PDA must exist after initialize");
     });
 
     it("initialize fails when called a second time", async () => {
@@ -73,25 +81,32 @@ describe("ghost_vault", () => {
         } catch (err: unknown) {
             assert.ok(err, "second initialize must fail — PDA already exists");
         }
+
+        // init_if_needed allows overwrites, so the call above may have stored a random pk.
+        // Restore the deterministic pk so the BLS redeem test has a consistent MintState.
+        await program.methods
+            .initialize(Array.from(serializeG2(mintPk)))
+            .rpc();
     });
 
     // ── deposit ───────────────────────────────────────────────────────────────
 
-    it("deposit creates PDA with blinded point, Pending state, and correct lamport balance", async () => {
+    it("deposit creates PDA with blinded point, Pending state, and routes SOL to vault", async () => {
         const secrets   = gl.deriveTokenSecrets(MASTER_SEED, TOKEN_INDEX);
         const depositId = secrets.blind.addressBytes;
         const r         = gl.getR(secrets);
         const { Y, B }  = gl.blindToken(secrets.spend.addressBytes, r);
         const bBytes    = serializeG1(B);
-        const yBytes    = serializeG1(Y);
 
         const [depositPDA] = PublicKey.findProgramAddressSync(
             [Buffer.from("deposit"), depositId],
             program.programId,
         );
 
+        const vaultBefore = await provider.connection.getBalance(vaultPDA);
+
         await program.methods
-            .deposit(Array.from(depositId), Array.from(bBytes), Array.from(yBytes))
+            .deposit(Array.from(depositId), Array.from(bBytes))
             .rpc();
 
         const record = await program.account.depositRecord.fetch(depositPDA);
@@ -99,27 +114,35 @@ describe("ghost_vault", () => {
         assert.deepEqual(Array.from(record.blindedPoint), Array.from(bBytes));
         assert.deepEqual(Array.from(record.mintSig), Array(64).fill(0));
 
+        // Deposit PDA only holds rent — denomination is in the vault.
+        const depositInfo = await provider.connection.getAccountInfo(depositPDA);
         const rentExemption = await provider.connection.getMinimumBalanceForRentExemption(
             DEPOSIT_ACCOUNT_SIZE,
         );
-        const accountInfo = await provider.connection.getAccountInfo(depositPDA);
         assert.equal(
-            accountInfo!.lamports,
-            rentExemption + DENOMINATION,
-            "lamports should equal rent-exemption + 0.01 SOL",
+            depositInfo!.lamports,
+            rentExemption,
+            "deposit PDA lamports should equal only rent-exemption (SOL went to vault)",
+        );
+
+        // Vault must have received DENOMINATION.
+        const vaultAfter = await provider.connection.getBalance(vaultPDA);
+        assert.equal(
+            vaultAfter - vaultBefore,
+            DENOMINATION,
+            "vault balance must increase by DENOMINATION",
         );
     });
 
     it("deposit fails when the same deposit ID is used twice", async () => {
         const secrets   = gl.deriveTokenSecrets(MASTER_SEED, TOKEN_INDEX);
         const depositId = secrets.blind.addressBytes;
-        const { Y, B }  = gl.blindToken(secrets.spend.addressBytes, gl.getR(secrets));
+        const { B }     = gl.blindToken(secrets.spend.addressBytes, gl.getR(secrets));
         const bBytes    = serializeG1(B);
-        const yBytes    = serializeG1(Y);
 
         try {
             await program.methods
-                .deposit(Array.from(depositId), Array.from(bBytes), Array.from(yBytes))
+                .deposit(Array.from(depositId), Array.from(bBytes))
                 .rpc();
             assert.fail("duplicate deposit should have thrown");
         } catch (err: unknown) {
@@ -174,12 +197,12 @@ describe("ghost_vault", () => {
     it("redeem happy path: deposit → announce → local BLS check → redeem → assert", async () => {
         // ── 1. Derive fresh token secrets ────────────────────────────────────
         const secrets   = gl.deriveTokenSecrets(REDEEM_SEED, REDEEM_INDEX);
-        const depositId = secrets.blind.addressBytes;   // 20-byte blind address
-        const nullifier = secrets.spend.addressBytes;   // 20-byte spend address
+        const depositId = secrets.blind.addressBytes;
+        const nullifier = secrets.spend.addressBytes;
         const r         = gl.getR(secrets);
         const { Y, B }  = gl.blindToken(secrets.spend.addressBytes, r);
 
-        // ── 2. Deposit ────────────────────────────────────────────────────────
+        // ── 2. Deposit (SOL goes to pool vault) ───────────────────────────────
         const bBytes = serializeG1(B);
         const yBytes = serializeG1(Y);
         const [depositPDA] = PublicKey.findProgramAddressSync(
@@ -187,7 +210,7 @@ describe("ghost_vault", () => {
             program.programId,
         );
         await program.methods
-            .deposit(Array.from(depositId), Array.from(bBytes), Array.from(yBytes))
+            .deposit(Array.from(depositId), Array.from(bBytes))
             .rpc();
 
         // ── 3. Announce (mint blind-signs B) ──────────────────────────────────
@@ -215,45 +238,55 @@ describe("ghost_vault", () => {
             recipient.toBytes(),
         );
 
-        // ── 7. Derive PDAs ────────────────────────────────────────────────────
+        // ── 7. Derive nullifier PDA ───────────────────────────────────────────
         const [nullifierPDA] = PublicKey.findProgramAddressSync(
             [Buffer.from("nullifier"), nullifier],
             program.programId,
         );
 
-        // ── 8. Send redeem transaction with elevated compute budget ───────────
+        // ── 8. Record vault balance before redeem ─────────────────────────────
+        const vaultBefore = await provider.connection.getBalance(vaultPDA);
+
+        // ── 9. Send redeem transaction (no deposit account, y_point as param) ──
         await program.methods
             .redeem(
                 recipient,
                 Array.from(sig65),
                 Array.from(nullifier),
                 Array.from(sBytes),
-                Array.from(depositId),
+                Array.from(yBytes),        // y_point — caller-supplied, BLS validates it
             )
             .accounts({
-                payer: provider.wallet.publicKey,
+                payer:           provider.wallet.publicKey,
                 recipientAccount: recipient,
-                mintState: mintStatePDA,
-                deposit: depositPDA,
-                nullifierRecord: nullifierPDA,
-                systemProgram: SystemProgram.programId,
+                mintState:        mintStatePDA,
+                vault:            vaultPDA,
+                nullifierRecord:  nullifierPDA,
+                systemProgram:    SystemProgram.programId,
             })
             .preInstructions([
                 ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
             ])
             .rpc();
 
-        // ── 9. Assertions ─────────────────────────────────────────────────────
-        // Nullifier PDA must exist
+        // ── 10. Assertions ────────────────────────────────────────────────────
+        // Nullifier PDA must exist (double-spend guard).
         const nullifierInfo = await provider.connection.getAccountInfo(nullifierPDA);
         assert.isNotNull(nullifierInfo, "nullifier PDA must exist after redeem");
 
-        // Deposit PDA must be closed
+        // Deposit PDA must remain open — it is NEVER referenced by redeem.
         const depositInfo = await provider.connection.getAccountInfo(depositPDA);
-        assert.isNull(depositInfo, "deposit PDA must be closed after redeem");
+        assert.isNotNull(depositInfo, "deposit PDA must remain open after redeem (no graph link)");
 
-        // Fresh destination wallet must have received ≈ 0.01 SOL; depositing
-        // wallet balance is unchanged (privacy: no link between the two).
+        // Vault must have paid out DENOMINATION.
+        const vaultAfter = await provider.connection.getBalance(vaultPDA);
+        assert.equal(
+            vaultBefore - vaultAfter,
+            DENOMINATION,
+            "vault must decrease by DENOMINATION",
+        );
+
+        // Fresh destination wallet must have received ≈ 0.01 SOL.
         const recipientBalance = await provider.connection.getBalance(recipient);
         assert.isAbove(recipientBalance, DENOMINATION * 0.9,
             "fresh destination wallet should receive ≈ 0.01 SOL");
@@ -267,73 +300,40 @@ describe("ghost_vault", () => {
     it("redeem fails on double-spend (same nullifier a second time)", async () => {
         // Re-derive the same token used in the happy-path test — nullifier already burned.
         const secrets   = gl.deriveTokenSecrets(REDEEM_SEED, REDEEM_INDEX);
-        const depositId = secrets.blind.addressBytes;
         const nullifier = secrets.spend.addressBytes;
         const r         = gl.getR(secrets);
-        const { B }     = gl.blindToken(secrets.spend.addressBytes, r);
+        const { Y, B }  = gl.blindToken(secrets.spend.addressBytes, r);
 
-        // We need a fresh deposit + announce so the deposit PDA exists again,
-        // but the nullifier PDA already exists → the init must fail.
-        const REDEEM_SEED_2  = Buffer.from("test_master_seed_redeem_002");
-        const secrets2       = gl.deriveTokenSecrets(REDEEM_SEED_2, REDEEM_INDEX);
-        const depositId2     = secrets2.blind.addressBytes;
+        const sPrime = blindSign(mintSk, B);
+        const S      = gl.unblindSignature(sPrime, r);
+        const yBytes = serializeG1(Y);
+        const sBytes = serializeG1(S);
 
-        // Use a deposit that is NOT the original one so that we can reuse the old nullifier.
-        // The easiest way: create another deposit with a different deposit_id but attempt
-        // to submit redeem with the already-used nullifier PDA.
-        const { Y: Y2, B: B2 } = gl.blindToken(secrets2.spend.addressBytes, gl.getR(secrets2));
-        const [depositPDA2] = PublicKey.findProgramAddressSync(
-            [Buffer.from("deposit"), depositId2],
-            program.programId,
-        );
-        await program.methods
-            .deposit(Array.from(depositId2), Array.from(serializeG1(B2)), Array.from(serializeG1(Y2)))
-            .rpc();
-        const sPrime2 = blindSign(mintSk, B2);
-        await program.methods
-            .announce(Array.from(depositId2), Array.from(serializeG1(sPrime2)))
-            .rpc();
+        // Use provider wallet as recipient for this test (not a privacy concern here).
+        const recipient = provider.wallet.publicKey;
+        const sig65     = gl.generateSolanaSpendSig(secrets.spend.priv, recipient.toBytes());
 
-        // Now try to redeem with the already-burned nullifier (secrets.spend.addressBytes)
-        // using the new deposit PDA — this MUST fail because nullifier PDA already exists.
-        const S2     = gl.unblindSignature(sPrime2, gl.getR(secrets2));
-        const sig65  = gl.generateSolanaSpendSig(
-            secrets2.spend.priv,
-            provider.wallet.publicKey.toBytes(),
-        );
         const [nullifierPDA] = PublicKey.findProgramAddressSync(
             [Buffer.from("nullifier"), nullifier],
             program.programId,
         );
 
-        // Use the same nullifier (from secrets) with the new deposit.
-        // The ECDSA check will fail since sig is for secrets2.spend.priv against secrets2's nullifier,
-        // but we're passing `nullifier` (secrets, already burned).
-        // For a true double-spend test, we use the same spend key:
-        const sig65_original = gl.generateSolanaSpendSig(
-            secrets.spend.priv,
-            provider.wallet.publicKey.toBytes(),
-        );
-        // Recompute S for original token (same as happy-path test, already redeemed)
-        const sPrime_orig = blindSign(mintSk, B);
-        const S_orig      = gl.unblindSignature(sPrime_orig, r);
-
         try {
             await program.methods
                 .redeem(
-                    provider.wallet.publicKey,
-                    Array.from(sig65_original),
-                    Array.from(nullifier),      // already-burned nullifier
-                    Array.from(serializeG1(S_orig)),
-                    Array.from(depositId),      // original deposit is gone; this will fail at state
+                    recipient,
+                    Array.from(sig65),
+                    Array.from(nullifier),  // already-burned nullifier
+                    Array.from(sBytes),
+                    Array.from(yBytes),
                 )
                 .accounts({
-                    payer: provider.wallet.publicKey,
-                    recipientAccount: provider.wallet.publicKey,
-                    mintState: mintStatePDA,
-                    deposit: depositPDA2,       // different deposit PDA — doesn't match seeds
-                    nullifierRecord: nullifierPDA,
-                    systemProgram: SystemProgram.programId,
+                    payer:            provider.wallet.publicKey,
+                    recipientAccount: recipient,
+                    mintState:        mintStatePDA,
+                    vault:            vaultPDA,
+                    nullifierRecord:  nullifierPDA,
+                    systemProgram:    SystemProgram.programId,
                 })
                 .preInstructions([
                     ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
