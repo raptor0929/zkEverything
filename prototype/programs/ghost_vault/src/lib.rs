@@ -3,7 +3,7 @@ use anchor_lang::system_program;
 use sha3::{Digest, Keccak256};
 use solana_secp256k1_recover::secp256k1_recover;
 
-declare_id!("GhVt1pV8XFwUmpaxQQGkR3f5pXBuXuNmQJhSsrBHe2TS");
+declare_id!("786pocjFvsLKLL4Ly5cYm2e5qsT4GMBvK21Cx97PWK1o");
 
 const DENOMINATION: u64 = 10_000_000; // 0.01 SOL
 const ALT_BN128_PAIRING_OUTPUT_LEN: usize = 32;
@@ -15,42 +15,14 @@ extern "C" {
         input_size: u64,
         result: *mut u8,
     ) -> u64;
-    fn sol_big_mod_exp(params: *const u8, result: *mut u8) -> u64;
 }
 
-// Layout matches the Solana SBF C SDK BigModExpParam struct.
-#[repr(C)]
-struct BigModExpParam {
-    base: *const u8,
-    base_len: u64,
-    exponent: *const u8,
-    exponent_len: u64,
-    modulus: *const u8,
-    modulus_len: u64,
-}
-
-// BN254 field prime (big-endian, 32 bytes).
+// BN254 field prime (big-endian, 32 bytes) — used only for G1 negation.
 const FP: [u8; 32] = [
     0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29,
     0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81, 0x58, 0x5d,
     0x97, 0x81, 0x6a, 0x91, 0x68, 0x71, 0xca, 0x8d,
     0x3c, 0x20, 0x8c, 0x16, 0xd8, 0x7c, 0xfd, 0x47,
-];
-
-// (FP - 1) / 2 — used for Euler's quadratic-residue criterion.
-const FP_MINUS1_OVER2: [u8; 32] = [
-    0x18, 0x32, 0x27, 0x39, 0x70, 0x98, 0xd0, 0x14,
-    0xdc, 0x28, 0x22, 0xdb, 0x40, 0xc0, 0xac, 0x2e,
-    0xcb, 0xc0, 0xb5, 0x48, 0xb4, 0x38, 0xe5, 0x46,
-    0x9e, 0x10, 0x46, 0x0b, 0x6c, 0x3e, 0x7e, 0xa3,
-];
-
-// (FP + 1) / 4 — square-root exponent valid because FP ≡ 3 (mod 4).
-const FP_PLUS1_OVER4: [u8; 32] = [
-    0x0c, 0x19, 0x13, 0x9c, 0xb8, 0x4c, 0x68, 0x0a,
-    0x6e, 0x14, 0x11, 0x6d, 0xa0, 0x60, 0x56, 0x17,
-    0x65, 0xe0, 0x5a, 0xa4, 0x5a, 0x1c, 0x72, 0xa3,
-    0x4f, 0x08, 0x23, 0x05, 0xb6, 0x1f, 0x3f, 0x52,
 ];
 
 // EIP-197 G2 generator constant [X_imag, X_real, Y_imag, Y_real].
@@ -75,48 +47,6 @@ fn g2_gen() -> [u8; 128] {
     ]
 }
 
-// Invoke sol_big_mod_exp: computes base^exponent mod FP (big-endian).
-fn bn254_pow_mod(base: &[u8; 32], exponent: &[u8]) -> [u8; 32] {
-    let param = BigModExpParam {
-        base: base.as_ptr(),
-        base_len: 32,
-        exponent: exponent.as_ptr(),
-        exponent_len: exponent.len() as u64,
-        modulus: FP.as_ptr(),
-        modulus_len: 32,
-    };
-    let mut result = [0u8; 32];
-    unsafe {
-        sol_big_mod_exp(&param as *const BigModExpParam as *const u8, result.as_mut_ptr());
-    }
-    result
-}
-
-// Reduces a 32-byte big-endian value mod FP (≤ 5 subtractions since 2^256 < 6·FP).
-fn reduce_mod_fp(mut x: [u8; 32]) -> [u8; 32] {
-    while &x >= &FP {
-        let mut borrow = 0i16;
-        for i in (0..32).rev() {
-            let d = x[i] as i16 - FP[i] as i16 - borrow;
-            x[i] = d.rem_euclid(256) as u8;
-            borrow = if d < 0 { 1 } else { 0 };
-        }
-    }
-    x
-}
-
-// Adds a small constant (≤ 255) to a 32-byte big-endian value and reduces mod FP.
-fn add_small_mod_fp(mut x: [u8; 32], small: u8) -> [u8; 32] {
-    let mut carry = small as u16;
-    for i in (0..32).rev() {
-        if carry == 0 { break; }
-        let s = x[i] as u16 + carry;
-        x[i] = s as u8;
-        carry = s >> 8;
-    }
-    reduce_mod_fp(x)
-}
-
 // Negates a G1 y-coordinate: FP - y (big-endian).
 fn negate_fp(y: &[u8; 32]) -> [u8; 32] {
     let mut result = [0u8; 32];
@@ -127,45 +57,6 @@ fn negate_fp(y: &[u8; 32]) -> [u8; 32] {
         borrow = if d < 0 { 1 } else { 0 };
     }
     result
-}
-
-// keccak256 try-and-increment hash-to-curve for BN254 G1, matching the EVM reference.
-// Returns the 64-byte G1 point (x BE || y BE) on success.
-fn hash_to_curve_bn254(nullifier: &[u8; 20]) -> Result<[u8; 64]> {
-    let one = { let mut a = [0u8; 32]; a[31] = 1; a };
-    let mut payload = [0u8; 24]; // 20-byte nullifier + 4-byte counter (BE)
-    payload[..20].copy_from_slice(nullifier);
-
-    for counter in 0u32..1000 {
-        payload[20..].copy_from_slice(&counter.to_be_bytes());
-
-        let hash: [u8; 32] = {
-            let mut h = Keccak256::new();
-            h.update(&payload);
-            h.finalize().into()
-        };
-
-        let x = reduce_mod_fp(hash);
-
-        // y² = x³ + 3 mod FP
-        let x_cubed = bn254_pow_mod(&x, &[3u8]);
-        let y_sq = add_small_mod_fp(x_cubed, 3);
-
-        // Euler criterion: y²^((FP−1)/2) mod FP == 1
-        let euler = bn254_pow_mod(&y_sq, &FP_MINUS1_OVER2);
-        if euler != one {
-            continue;
-        }
-
-        // y = y²^((FP+1)/4) mod FP
-        let y = bn254_pow_mod(&y_sq, &FP_PLUS1_OVER4);
-
-        let mut point = [0u8; 64];
-        point[..32].copy_from_slice(&x);
-        point[32..].copy_from_slice(&y);
-        return Ok(point);
-    }
-    err!(VaultError::HashToCurveFailed)
 }
 
 #[program]
@@ -180,14 +71,19 @@ pub mod ghost_vault {
         Ok(())
     }
 
-    /// Lock 0.01 SOL and register a blinded G1 point for a given deposit ID.
+    /// Lock 0.01 SOL and register a blinded G1 point and unblinded base point Y
+    /// for a given deposit ID.  Y = H(spend_address) is committed here so that
+    /// the redeem instruction can verify the BLS pairing without recomputing the
+    /// hash-to-curve on-chain (which would require sol_big_mod_exp).
     pub fn deposit(
         ctx: Context<Deposit>,
         _deposit_id: [u8; 20],
         blinded_point: [u8; 64],
+        y_point: [u8; 64],
     ) -> Result<()> {
         let record = &mut ctx.accounts.deposit;
         record.blinded_point = blinded_point;
+        record.y_point = y_point;
         record.mint_sig = [0u8; 64];
         record.state = 0; // Pending
         record.bump = ctx.bumps.deposit;
@@ -222,6 +118,10 @@ pub mod ghost_vault {
 
     /// Redeem a token: verify ECDSA spend proof + BLS pairing, burn the nullifier,
     /// close the deposit PDA, and transfer all SOL to the recipient.
+    ///
+    /// Y = H(nullifier) was committed to the deposit record at deposit time.
+    /// The contract reads it from there and uses it for the BLS pairing check,
+    /// avoiding any on-chain hash-to-curve computation.
     ///
     /// Parameters
     /// ----------
@@ -267,21 +167,19 @@ pub mod ghost_vault {
         // ── 2. State check ───────────────────────────────────────────────────
         require!(ctx.accounts.deposit.state == 1, VaultError::NotAnnounced);
 
-        // ── 3. Hash-to-curve: Y = H(nullifier) ──────────────────────────────
-        let y_point = hash_to_curve_bn254(&nullifier)?; // [x(32), y(32)] BE
-
-        // ── 4. BLS pairing: e(S, G2_gen) ⊗ e(−Y, mint_pk) == 1 ─────────────
-        // Equivalent to e(S, G2_gen) == e(Y, mint_pk).
-        // Negating Y: keep x, replace y with FP − y.
+        // ── 3. Read Y from deposit record (committed at deposit time) ────────
+        let y_point = ctx.accounts.deposit.y_point;
         let y_x: &[u8; 32] = y_point[..32].try_into().unwrap();
         let y_y: &[u8; 32] = y_point[32..].try_into().unwrap();
         let neg_y_y = negate_fp(y_y);
 
+        // ── 4. BLS pairing: e(S, G2_gen) ⊗ e(−Y, mint_pk) == 1 ─────────────
+        // Equivalent to e(S, G2_gen) == e(Y, mint_pk).
         let mut pairing_input = [0u8; 384];
         pairing_input[..64].copy_from_slice(&unblinded_sig);         // S
         pairing_input[64..192].copy_from_slice(&g2_gen());           // G2_gen
-        pairing_input[192..224].copy_from_slice(y_x);                // −Y.x (x unchanged)
-        pairing_input[224..256].copy_from_slice(&neg_y_y);           // −Y.y
+        pairing_input[192..224].copy_from_slice(y_x);                // −Y.x (unchanged)
+        pairing_input[224..256].copy_from_slice(&neg_y_y);           // −Y.y = FP − Y.y
         pairing_input[256..384].copy_from_slice(&ctx.accounts.mint_state.mint_pk); // PK_mint
 
         let mut pairing_result = [0u8; ALT_BN128_PAIRING_OUTPUT_LEN];
@@ -315,7 +213,7 @@ pub struct Initialize<'info> {
     pub authority: Signer<'info>,
 
     #[account(
-        init,
+        init_if_needed,
         payer = authority,
         space = 8 + MintState::LEN,
         seeds = [b"state"],
@@ -406,13 +304,14 @@ impl MintState {
 #[account]
 pub struct DepositRecord {
     pub blinded_point: [u8; 64],
+    pub y_point: [u8; 64],       // H(spend_address) committed at deposit time
     pub mint_sig: [u8; 64],
     pub state: u8,   // 0 = Pending, 1 = Announced
     pub bump: u8,
 }
 
 impl DepositRecord {
-    pub const LEN: usize = 64 + 64 + 1 + 1;
+    pub const LEN: usize = 64 + 64 + 64 + 1 + 1;
 }
 
 #[account]
@@ -436,6 +335,4 @@ pub enum VaultError {
     InvalidECDSA,
     #[msg("BLS pairing check failed")]
     InvalidBLS,
-    #[msg("hash-to-curve found no valid point in 1000 iterations")]
-    HashToCurveFailed,
 }

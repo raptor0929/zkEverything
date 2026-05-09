@@ -7,13 +7,16 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-ghost_vault = "GhVt1pV8XFwUmpaxQQGkR3f5pXBuXuNmQJhSsrBHe2TS"
+ghost_vault = "786pocjFvsLKLL4Ly5cYm2e5qsT4GMBvK21Cx97PWK1o"
+
+[programs.devnet]
+ghost_vault = "786pocjFvsLKLL4Ly5cYm2e5qsT4GMBvK21Cx97PWK1o"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "localnet"
+cluster = "devnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]

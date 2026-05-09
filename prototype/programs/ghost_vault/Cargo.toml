@@ -17,7 +17,7 @@ idl-build = ["anchor-lang/idl-build"]
 default = []
 
 [dependencies]
-anchor-lang = "0.32.0"
+anchor-lang = { version = "0.32.0", features = ["init-if-needed"] }
 # Pin indexmap to 2.7.x: platform-tools v1.46/v1.47 ship Cargo 1.79/1.84 which
 # can't parse hashbrown 0.17's edition=2024 Cargo.toml. indexmap 2.7.x pulls in
 # hashbrown 0.15.x (edition=2021) instead.
