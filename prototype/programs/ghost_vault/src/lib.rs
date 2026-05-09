@@ -42,6 +42,20 @@ pub mod ghost_vault {
 
         Ok(())
     }
+
+    /// Post the mint's blind signature S' on-chain and advance state to Announced.
+    /// Permissionless: any fee payer may submit the blind signature.
+    pub fn announce(
+        ctx: Context<Announce>,
+        _deposit_id: [u8; 20],
+        mint_sig: [u8; 64],
+    ) -> Result<()> {
+        let record = &mut ctx.accounts.deposit;
+        require!(record.state == 0, VaultError::NotPending);
+        record.mint_sig = mint_sig;
+        record.state = 1; // Announced
+        Ok(())
+    }
 }
 
 // ── Account contexts ──────────────────────────────────────────────────────────
@@ -81,6 +95,20 @@ pub struct Deposit<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[derive(Accounts)]
+#[instruction(deposit_id: [u8; 20])]
+pub struct Announce<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"deposit", deposit_id.as_ref()],
+        bump = deposit.bump,
+    )]
+    pub deposit: Account<'info, DepositRecord>,
+}
+
 // ── Account data ──────────────────────────────────────────────────────────────
 
 #[account]
@@ -103,4 +131,12 @@ pub struct DepositRecord {
 
 impl DepositRecord {
     pub const LEN: usize = 64 + 64 + 1 + 1;
+}
+
+// ── Errors ────────────────────────────────────────────────────────────────────
+
+#[error_code]
+pub enum VaultError {
+    #[msg("Deposit is not in Pending state")]
+    NotPending,
 }
