@@ -28,6 +28,18 @@ export function generateMintKeypair(): { sk: mcl.Fr; pk: mcl.G2 } {
     return { sk, pk };
 }
 
+/**
+ * Serializes a G1 point to 64 bytes: [X (32 bytes), Y (32 bytes)].
+ * mcl getStr(16) order: "1 X Y"
+ */
+export function serializeG1(point: mcl.G1): Uint8Array {
+    const parts = point.getStr(16).split(' ');
+    const buf = new Uint8Array(64);
+    buf.set(hexToBytes32(parts[1]),  0);  // X
+    buf.set(hexToBytes32(parts[2]), 32);  // Y
+    return buf;
+}
+
 /** Computes S' = sk · B (blind signature). */
 export function blindSign(sk: mcl.Fr, B: mcl.G1): mcl.G1 {
     return mcl.mul(B, sk) as mcl.G1;
