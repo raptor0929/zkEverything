@@ -254,6 +254,61 @@ export function generateSolanaSpendSig(
 }
 
 // ==============================================================================
+// 4c. RELAY CLIENT
+// ==============================================================================
+
+export interface RelayPayload {
+    recipient:     string;   // base58 Solana pubkey
+    spend_sig:     string;   // hex 65 bytes
+    nullifier:     string;   // hex 20 bytes
+    unblinded_sig: string;   // hex 64 bytes
+    deposit_id:    string;   // hex 20 bytes
+}
+
+/**
+ * Builds the JSON payload to POST to a GhostVault relayer's /relay endpoint.
+ * The relayer will sign and broadcast the redeem transaction — the user's wallet
+ * never appears on-chain during the redemption, completing the privacy cycle.
+ */
+export function buildRelayPayload(
+    secrets:      TokenSecrets,
+    sPrime:       import('mcl-wasm').G1,   // blind sig from announce record
+    r:            bigint,
+    recipientB58: string,                  // base58 Solana pubkey of destination
+    recipientBytes: Uint8Array,            // 32-byte raw pubkey (for ECDSA msg)
+    serializeG1Fn: (p: import('mcl-wasm').G1) => Uint8Array,
+): RelayPayload {
+    const S = unblindSignature(sPrime, r);
+    const sig65 = generateSolanaSpendSig(secrets.spend.priv, recipientBytes);
+
+    return {
+        recipient:     recipientB58,
+        spend_sig:     Buffer.from(sig65).toString('hex'),
+        nullifier:     Buffer.from(secrets.spend.addressBytes).toString('hex'),
+        unblinded_sig: Buffer.from(serializeG1Fn(S)).toString('hex'),
+        deposit_id:    Buffer.from(secrets.blind.addressBytes).toString('hex'),
+    };
+}
+
+/**
+ * Sends a relay payload to the relayer and returns the transaction signature.
+ * Throws if the relayer responds with an error.
+ */
+export async function sendToRelayer(
+    relayerUrl: string,
+    payload:    RelayPayload,
+): Promise<string> {
+    const res = await fetch(`${relayerUrl}/relay`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(payload),
+    });
+    const json = await res.json() as { signature?: string; error?: string };
+    if (!res.ok || json.error) throw new Error(json.error ?? `HTTP ${res.status}`);
+    return json.signature!;
+}
+
+// ==============================================================================
 // 5. VERIFICATION
 // ==============================================================================
 
