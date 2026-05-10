@@ -13,28 +13,6 @@ const PROGRAM_ID = new PublicKey(
   "786pocjFvsLKLL4Ly5cYm2e5qsT4GMBvK21Cx97PWK1o"
 );
 
-function buildProvider(): anchor.AnchorProvider {
-  const rpcUrl =
-    process.env.RPC_URL ?? "https://api.devnet.solana.com";
-  const connection = new Connection(rpcUrl, "confirmed");
-
-  const rawKp = process.env.RELAYER_KEYPAIR;
-  if (!rawKp) throw new Error("RELAYER_KEYPAIR env var not set");
-  const relayerKp = Keypair.fromSecretKey(
-    Uint8Array.from(JSON.parse(rawKp) as number[])
-  );
-
-  const wallet = new anchor.Wallet(relayerKp);
-  return new anchor.AnchorProvider(connection, wallet, {
-    commitment: "confirmed",
-  });
-}
-
-// Singleton provider + program — built once at module load.
-const provider = buildProvider();
-anchor.setProvider(provider);
-const program = new anchor.Program(IDL as anchor.Idl, provider);
-
 const [mintStatePDA] = PublicKey.findProgramAddressSync(
   [Buffer.from("state")],
   PROGRAM_ID
@@ -44,14 +22,38 @@ const [vaultPDA] = PublicKey.findProgramAddressSync(
   PROGRAM_ID
 );
 
-export const relayerPublicKey: PublicKey = (
-  provider.wallet as anchor.Wallet
-).payer.publicKey;
+function buildProvider(keypair: Keypair): anchor.AnchorProvider {
+  const rpcUrl = process.env.RPC_URL ?? "https://api.devnet.solana.com";
+  const connection = new Connection(rpcUrl, "confirmed");
+  const wallet = new anchor.Wallet(keypair);
+  return new anchor.AnchorProvider(connection, wallet, {
+    commitment: "confirmed",
+  });
+}
+
+function buildProgram(keypair: Keypair): anchor.Program {
+  const provider = buildProvider(keypair);
+  return new anchor.Program(IDL as anchor.Idl, provider);
+}
+
+export function loadRelayerKeypair(): Keypair {
+  const raw = process.env.RELAYER_KEYPAIR;
+  if (!raw) throw new Error("RELAYER_KEYPAIR env var not set");
+  return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(raw) as number[]));
+}
+
+export function loadMintKeypair(): Keypair {
+  const raw = process.env.MINT_KEYPAIR;
+  if (!raw) throw new Error("MINT_KEYPAIR env var not set");
+  return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(raw) as number[]));
+}
 
 export async function callDeposit(
+  agentKeypair: Keypair,
   depositId: Uint8Array,
   bBytes: Uint8Array
 ): Promise<string> {
+  const program = buildProgram(agentKeypair);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return await (program.methods as any)
     .deposit(Array.from(depositId), Array.from(bBytes))
@@ -59,9 +61,11 @@ export async function callDeposit(
 }
 
 export async function callAnnounce(
+  mintKeypair: Keypair,
   depositId: Uint8Array,
   sPrimeBytes: Uint8Array
 ): Promise<string> {
+  const program = buildProgram(mintKeypair);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return await (program.methods as any)
     .announce(Array.from(depositId), Array.from(sPrimeBytes))
@@ -69,6 +73,7 @@ export async function callAnnounce(
 }
 
 export async function callRedeem(
+  relayerKeypair: Keypair,
   recipient: PublicKey,
   sig65: Uint8Array,
   nullifier: Uint8Array,
@@ -80,8 +85,7 @@ export async function callRedeem(
     PROGRAM_ID
   );
 
-  const relayerKp = (provider.wallet as anchor.Wallet).payer;
-
+  const program = buildProgram(relayerKeypair);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return await (program.methods as any)
     .redeem(
@@ -92,7 +96,7 @@ export async function callRedeem(
       Array.from(yBytes)
     )
     .accounts({
-      payer: relayerKp.publicKey,
+      payer: relayerKeypair.publicKey,
       recipientAccount: recipient,
       mintState: mintStatePDA,
       vault: vaultPDA,

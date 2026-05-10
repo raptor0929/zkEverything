@@ -2,6 +2,7 @@ import { streamText, tool, CoreMessage } from "ai";
 import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
 import { sendPrivatePayment } from "./tools/send-private-payment";
+import { loadRelayerKeypair } from "./solana/client";
 
 const SYSTEM_PROMPT = `You are GhostVault, a privacy-preserving payment agent on Solana devnet.
 
@@ -32,7 +33,9 @@ export function createAgentStream(messages: CoreMessage[]) {
             .describe("The recipient's Solana public key in base58 format"),
         }),
         execute: async ({ recipient }) => {
-          return await sendPrivatePayment(recipient);
+          // Placeholder: relayer keypair used until per-user agent keypairs are
+          // loaded from Supabase in issue 014.
+          return await sendPrivatePayment(loadRelayerKeypair(), recipient);
         },
       }),
     },

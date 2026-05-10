@@ -1,10 +1,16 @@
 import { randomBytes } from "crypto";
-import { PublicKey } from "@solana/web3.js";
+import { Keypair, PublicKey } from "@solana/web3.js";
 import * as mcl from "mcl-wasm";
 import { bn254Ready } from "../lib/bn254-init";
 import { serializeG1 } from "../lib/mint";
 import * as gl from "../lib/ghost-library";
-import { callDeposit, callAnnounce, callRedeem } from "../solana/client";
+import {
+  callDeposit,
+  callAnnounce,
+  callRedeem,
+  loadMintKeypair,
+  loadRelayerKeypair,
+} from "../solana/client";
 import { mapError } from "../solana/errors";
 
 function loadMintSk(): mcl.Fr {
@@ -16,6 +22,7 @@ function loadMintSk(): mcl.Fr {
 }
 
 async function runPaymentFlow(
+  agentKeypair: Keypair,
   recipientB58: string
 ): Promise<{ signature: string }> {
   await bn254Ready;
@@ -35,13 +42,15 @@ async function runPaymentFlow(
   const { Y, B } = gl.blindToken(secrets.spend.addressBytes, r);
 
   const bBytes = serializeG1(B);
-  await callDeposit(depositId, bBytes);
+  await callDeposit(agentKeypair, depositId, bBytes);
 
+  const mintKeypair = loadMintKeypair();
   const mintSk = loadMintSk();
   const sPrime = mcl.mul(B, mintSk) as mcl.G1;
   const sPrimeBytes = serializeG1(sPrime);
-  await callAnnounce(depositId, sPrimeBytes);
+  await callAnnounce(mintKeypair, depositId, sPrimeBytes);
 
+  const relayerKeypair = loadRelayerKeypair();
   const S = gl.unblindSignature(sPrime, r);
   const sBytes = serializeG1(S);
   const yBytes = serializeG1(Y);
@@ -51,6 +60,7 @@ async function runPaymentFlow(
   );
 
   const signature = await callRedeem(
+    relayerKeypair,
     recipientPubkey,
     sig65,
     nullifier,
@@ -62,10 +72,11 @@ async function runPaymentFlow(
 }
 
 export async function sendPrivatePayment(
+  agentKeypair: Keypair,
   recipientB58: string
 ): Promise<{ signature: string } | { error: string }> {
   try {
-    return await runPaymentFlow(recipientB58);
+    return await runPaymentFlow(agentKeypair, recipientB58);
   } catch (err) {
     console.error("[send-private-payment]", err);
     return { error: mapError(err) };
