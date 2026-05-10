@@ -42,10 +42,13 @@ export function CreateAgentPage({ onCreated }: Props) {
 
   return (
     <div style={centeredLayout}>
+      <button onClick={() => supabase.auth.signOut()} style={logoutBtnStyle}>
+        Log out
+      </button>
       <h1 style={heading}>zkEverything</h1>
       <Image
         src="/zkEverything.webp"
-        alt="Ghost mascot"
+        alt="zkEverything mascot"
         width={180}
         height={180}
         style={{ marginBottom: 32 }}
@@ -66,7 +69,22 @@ const centeredLayout: React.CSSProperties = {
   minHeight: "100dvh",
   gap: 16,
   padding: 24,
+  paddingTop: 56,
   boxSizing: "border-box",
+  position: "relative",
+};
+
+const logoutBtnStyle: React.CSSProperties = {
+  position: "absolute",
+  top: 16,
+  right: 16,
+  padding: "5px 12px",
+  borderRadius: 8,
+  border: "1px solid #333",
+  background: "transparent",
+  color: "#888",
+  fontSize: "0.78rem",
+  cursor: "pointer",
 };
 
 const heading: React.CSSProperties = {

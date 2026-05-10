@@ -181,6 +181,6 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 // ── Start ─────────────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
-    console.log(`GhostVault relayer listening on http://localhost:${PORT}`);
+    console.log(`zkEverything relayer listening on http://localhost:${PORT}`);
     console.log(`RPC: ${RPC_URL}`);
 });

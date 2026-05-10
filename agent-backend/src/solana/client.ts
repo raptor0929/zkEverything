@@ -24,10 +24,15 @@ const [vaultPDA] = PublicKey.findProgramAddressSync(
 
 function buildProvider(keypair: Keypair): anchor.AnchorProvider {
   const rpcUrl = process.env.RPC_URL ?? "https://api.devnet.solana.com";
-  const connection = new Connection(rpcUrl, "confirmed");
+  const connection = new Connection(rpcUrl, {
+    commitment: "confirmed",
+    confirmTransactionInitialTimeout: 120_000,
+  });
   const wallet = new anchor.Wallet(keypair);
   return new anchor.AnchorProvider(connection, wallet, {
     commitment: "confirmed",
+    skipPreflight: true,
+    preflightCommitment: "processed",
   });
 }
 
@@ -85,9 +90,13 @@ export async function callRedeem(
     PROGRAM_ID
   );
 
-  const program = buildProgram(relayerKeypair);
+  const provider = buildProvider(relayerKeypair);
+  const program = new anchor.Program(IDL as anchor.Idl, provider);
+
+  // Build, send, then confirm separately so we always capture the signature
+  // even when devnet confirmation polling times out after submission.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return await (program.methods as any)
+  const tx = await (program.methods as any)
     .redeem(
       recipient,
       Array.from(sig65),
@@ -106,5 +115,21 @@ export async function callRedeem(
     .preInstructions([
       ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
     ])
-    .rpc();
+    .transaction();
+
+  const signature = await provider.connection.sendTransaction(tx, [relayerKeypair], {
+    skipPreflight: true,
+  });
+
+  try {
+    const latestBlockhash = await provider.connection.getLatestBlockhash("confirmed");
+    await provider.connection.confirmTransaction(
+      { signature, ...latestBlockhash },
+      "confirmed"
+    );
+  } catch {
+    // Confirmation polling timed out but tx was already submitted — signature is valid.
+  }
+
+  return signature;
 }

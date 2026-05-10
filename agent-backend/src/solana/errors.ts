@@ -16,7 +16,7 @@ const ERROR_MAP: Array<{ pattern: RegExp; message: string }> = [
   },
   {
     pattern:
-      /timeout|etimedout|econnrefused|network error|socket hang up|fetch failed|connection refused/i,
+      /timeout|etimedout|econnrefused|network error|socket hang up|fetch failed|connection refused|not confirmed in|block height exceeded|blockhash not found|TransactionExpired|unknown if it succeeded/i,
     message: "Solana devnet is slow right now. Please try again in a moment.",
   },
 ];

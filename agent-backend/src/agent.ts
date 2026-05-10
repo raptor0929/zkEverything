@@ -21,7 +21,8 @@ Rules:
 - Never skip steps or call tools out of order.
 - Never make up transaction signatures or pubkeys.
 - Keep all text responses brief and conversational.
-- If the user provides an invalid Solana address, tell them and ask again (do not call collect_amount yet).`;
+- A valid Solana address is any base58 string between 32 and 44 characters long. Accept it and proceed — do NOT try to validate it yourself. The blockchain will handle invalid addresses.
+- After the user provides any string that looks like a wallet address (32–44 non-whitespace characters), immediately call collect_amount.`;
 
 export function createAgentStream(userId: string, messages: CoreMessage[]) {
   return streamText({

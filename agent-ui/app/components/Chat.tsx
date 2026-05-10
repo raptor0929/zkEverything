@@ -171,10 +171,13 @@ export function Chat() {
     <div style={containerStyle}>
       {/* Header */}
       <div style={headerStyle}>
-        <span style={{ fontWeight: 700, fontSize: "1rem" }}>zkEverything</span>
-        <span style={{ fontSize: "0.75rem", color: "#888", marginLeft: 8 }}>
-          Private SOL · devnet
-        </span>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+          <span style={{ fontWeight: 700, fontSize: "1rem" }}>zkEverything</span>
+          <span style={{ fontSize: "0.75rem", color: "#888" }}>Private SOL · devnet</span>
+        </div>
+        <button onClick={() => supabase.auth.signOut()} style={logoutBtnStyle}>
+          Log out
+        </button>
       </div>
 
       {/* Message list */}
@@ -377,10 +380,21 @@ const containerStyle: React.CSSProperties = {
 
 const headerStyle: React.CSSProperties = {
   display: "flex",
-  alignItems: "baseline",
+  alignItems: "center",
+  justifyContent: "space-between",
   padding: "14px 16px 10px",
   borderBottom: "1px solid #222",
   flexShrink: 0,
+};
+
+const logoutBtnStyle: React.CSSProperties = {
+  padding: "5px 12px",
+  borderRadius: 8,
+  border: "1px solid #333",
+  background: "transparent",
+  color: "#888",
+  fontSize: "0.78rem",
+  cursor: "pointer",
 };
 
 const messageListStyle: React.CSSProperties = {

@@ -6,7 +6,7 @@ function hexToBytes32(hex: string): Uint8Array {
 }
 
 /**
- * Serializes a G2 point to 128 bytes in EIP-197 limb order: [X_imag, X_real, Y_imag, Y_real].
+ * Serializes a G2 point to 128 bytes in BN254 limb order: [X_imag, X_real, Y_imag, Y_real].
  * mcl getStr(16) order: "1 X_real X_imag Y_real Y_imag"
  */
 export function serializeG2(pk: mcl.G2): Uint8Array {

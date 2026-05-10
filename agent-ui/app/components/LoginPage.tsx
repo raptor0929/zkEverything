@@ -70,7 +70,7 @@ export function LoginPage() {
       <h1 style={heading}>zkEverything</h1>
       <Image
         src="/zkEverything.webp"
-        alt="Ghost mascot"
+        alt="zkEverything mascot"
         width={160}
         height={160}
         style={{ marginBottom: 16 }}

@@ -39,6 +39,7 @@ router.post("/create", requireAuth, async (req: Request, res: Response) => {
   );
 
   if (error) {
+    console.error("[create-agent] Supabase upsert error:", error);
     res.status(500).json({ error: "Failed to create agent" });
     return;
   }
