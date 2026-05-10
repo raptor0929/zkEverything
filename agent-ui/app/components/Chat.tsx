@@ -179,17 +179,9 @@ export function Chat() {
 
       {/* Message list */}
       <div style={messageListStyle}>
-        {/* Ghost + chip — centered when idle */}
+        {/* Suggestion chip — centered when idle */}
         {isIdle && (
           <div style={idleOverlayStyle}>
-            <Image
-              src="/zkEverything.webp"
-              alt="Ghost mascot"
-              width={110}
-              height={110}
-              priority
-              style={{ marginBottom: 20, opacity: 0.9 }}
-            />
             <button
               onClick={() => append({ role: "user", content: "I want to create a new transaction" })}
               style={chipStyle}
@@ -294,6 +286,17 @@ export function Chat() {
             </button>
           </form>
         )}
+      </div>
+
+      {/* Ghost footer — always visible */}
+      <div style={ghostFooterStyle}>
+        <Image
+          src="/zkEverything.webp"
+          alt="zkEverything ghost"
+          width={48}
+          height={48}
+          style={{ opacity: 0.35 }}
+        />
       </div>
 
       <style>{`
@@ -547,4 +550,12 @@ const copyBtnStyle: React.CSSProperties = {
 const spinnerStyle: React.CSSProperties = {
   display: "inline-block",
   animation: "pulse 1.2s ease-in-out infinite",
+};
+
+const ghostFooterStyle: React.CSSProperties = {
+  flexShrink: 0,
+  display: "flex",
+  justifyContent: "center",
+  alignItems: "center",
+  paddingBottom: 12,
 };
