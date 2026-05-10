@@ -1,6 +1,8 @@
 import "dotenv/config";
-import express from "express";
+import express, { Request, Response } from "express";
 import cors from "cors";
+import { CoreMessage } from "ai";
+import { createAgentStream } from "./agent";
 
 const app = express();
 const port = process.env.PORT ?? 4000;
@@ -8,11 +10,21 @@ const port = process.env.PORT ?? 4000;
 app.use(express.json());
 app.use(
   cors({
-    origin: process.env.ALLOWED_ORIGIN,
+    origin: process.env.ALLOWED_ORIGIN ?? "*",
   })
 );
 
-// TODO: wire up /api/chat route (issue 008)
+app.post("/api/chat", async (req: Request, res: Response) => {
+  const { messages } = req.body as { messages: CoreMessage[] };
+
+  try {
+    const result = createAgentStream(messages ?? []);
+    result.pipeDataStreamToResponse(res);
+  } catch (err) {
+    console.error("Chat error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
 app.listen(port, () => {
   console.log(`agent-backend listening on port ${port}`);
