@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "GhostVault Agent",
-  description: "Send 0.01 SOL privately on Solana devnet",
+  title: "zkEverything",
+  description: "Privacy-preserving SOL transfers on Solana devnet",
 };
 
 export default function RootLayout({

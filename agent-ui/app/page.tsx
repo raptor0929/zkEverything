@@ -1,5 +1,5 @@
-import { Chat } from "./components/Chat";
+import { ClientWrapper } from "./components/ClientWrapper";
 
 export default function Home() {
-  return <Chat />;
+  return <ClientWrapper />;
 }
