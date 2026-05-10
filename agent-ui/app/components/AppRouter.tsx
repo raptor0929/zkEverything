@@ -9,33 +9,34 @@ import { Chat } from "./Chat";
 
 type Screen = "loading" | "login" | "create-agent" | "chat";
 
+async function checkAgent(token: string): Promise<"create-agent" | "chat"> {
+  try {
+    const res = await apiFetch("/api/agent", token);
+    return res.status === 404 ? "create-agent" : "chat";
+  } catch {
+    return "create-agent";
+  }
+}
+
 export function AppRouter() {
   const [screen, setScreen] = useState<Screen>("loading");
 
   useEffect(() => {
-    async function bootstrap() {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
+    // Check session on mount
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      if (!session) { setScreen("login"); return; }
+      setScreen(await checkAgent(session.access_token));
+    });
 
-      if (!session) {
-        setScreen("login");
-        return;
+    // React to login / logout without a page reload
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (_event, session) => {
+        if (!session) { setScreen("login"); return; }
+        setScreen(await checkAgent(session.access_token));
       }
+    );
 
-      try {
-        const res = await apiFetch("/api/agent", session.access_token);
-        if (res.status === 404) {
-          setScreen("create-agent");
-        } else {
-          setScreen("chat");
-        }
-      } catch {
-        setScreen("create-agent");
-      }
-    }
-
-    bootstrap();
+    return () => subscription.unsubscribe();
   }, []);
 
   if (screen === "loading") {
