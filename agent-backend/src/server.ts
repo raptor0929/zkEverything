@@ -4,7 +4,7 @@ import cors from "cors";
 import { CoreMessage } from "ai";
 import { createAgentStream } from "./agent";
 import { bn254Ready } from "./lib/bn254-init"; // triggers WASM load at startup
-import { requireAuth } from "./auth/middleware";
+import { requireAuth, AuthenticatedRequest } from "./auth/middleware";
 import { agentRouter } from "./agent/routes";
 
 bn254Ready.catch((err) => console.error("BN254 init failed:", err));
@@ -23,9 +23,10 @@ app.use("/api/agent", agentRouter);
 
 app.post("/api/chat", requireAuth, async (req: Request, res: Response) => {
   const { messages } = req.body as { messages: CoreMessage[] };
+  const { userId } = req as AuthenticatedRequest;
 
   try {
-    const result = createAgentStream(messages ?? []);
+    const result = createAgentStream(userId, messages ?? []);
     result.pipeDataStreamToResponse(res);
   } catch (err) {
     console.error("Chat error:", err);

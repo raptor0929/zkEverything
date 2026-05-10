@@ -1,44 +1,106 @@
 import { streamText, tool, CoreMessage } from "ai";
 import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
+import { Keypair } from "@solana/web3.js";
 import { sendPrivatePayment } from "./tools/send-private-payment";
-import { loadRelayerKeypair } from "./solana/client";
+import { getSupabaseAdmin } from "./agent/supabase";
+import { decrypt } from "./agent/crypto";
 
-const SYSTEM_PROMPT = `You are GhostVault, a privacy-preserving payment agent on Solana devnet.
+const SYSTEM_PROMPT = `You are zkEverything, a privacy-preserving payment agent on Solana devnet.
 
-When the conversation starts:
-1. Greet the user warmly and explain that you can send exactly 0.01 SOL privately to any Solana address using a zero-knowledge protocol.
-2. Ask them to provide the recipient's Solana wallet address.
+Follow this exact sequence every time the user wants to send a transaction:
 
-Once they provide an address:
-3. Confirm the address and call the send_private_payment tool immediately.
-4. If the tool returns a "signature" field, present it as a Solscan devnet link:
-   https://solscan.io/tx/<signature>?cluster=devnet
-5. If the tool returns an "error" field, relay that error message naturally in one sentence. Do not expose JSON or raw error details.
+1. Greet briefly (one sentence). Then immediately call collect_destination.
+2. After the user provides a Solana address, call collect_amount.
+3. After the user selects or states an amount, call show_funding_address with the amountSol they chose.
+4. Wait. When the user says "funds received", call send_private_payment with the recipient address from step 2.
+5. If send_private_payment returns a signature, call payment_complete with that signature.
+6. If send_private_payment returns an error, relay the error as one natural sentence. Do not show JSON.
 
-Keep responses concise and conversational. Do not make up transaction signatures.`;
+Rules:
+- Never skip steps or call tools out of order.
+- Never make up transaction signatures or pubkeys.
+- Keep all text responses brief and conversational.
+- If the user provides an invalid Solana address, tell them and ask again (do not call collect_amount yet).`;
 
-export function createAgentStream(messages: CoreMessage[]) {
+export function createAgentStream(userId: string, messages: CoreMessage[]) {
   return streamText({
     model: openai("gpt-4o-mini"),
     system: SYSTEM_PROMPT,
     messages,
     tools: {
+      collect_destination: tool({
+        description:
+          "Signal the UI to show the destination address input helper. Call this immediately after greeting.",
+        parameters: z.object({}),
+        execute: async () => ({}),
+      }),
+
+      collect_amount: tool({
+        description:
+          "Signal the UI to show the amount preset buttons (1 SOL, 0.1 SOL, 0.01 SOL). Call this after the user confirms their destination address.",
+        parameters: z.object({}),
+        execute: async () => ({}),
+      }),
+
+      show_funding_address: tool({
+        description:
+          "Signal the UI to display the agent funding address card so the user can send SOL to it. Call this after the user selects an amount.",
+        parameters: z.object({
+          amountSol: z
+            .number()
+            .describe("The amount the user selected, e.g. 0.01"),
+        }),
+        execute: async ({ amountSol }) => {
+          const supabase = getSupabaseAdmin();
+          const { data } = await supabase
+            .from("agents")
+            .select("pubkey")
+            .eq("user_id", userId)
+            .single();
+          const agentPubkey: string = data?.pubkey ?? "unknown";
+          return { agentPubkey, amountSol };
+        },
+      }),
+
       send_private_payment: tool({
         description:
-          "Send 0.01 SOL privately to the specified recipient address using the GhostVault zero-knowledge protocol. Returns { signature } on success or { error } on failure.",
+          "Execute the full private payment flow (deposit → announce → redeem) using the user's agent keypair. Call only after receiving 'funds received' from the user.",
         parameters: z.object({
           recipient: z
             .string()
             .describe("The recipient's Solana public key in base58 format"),
         }),
         execute: async ({ recipient }) => {
-          // Placeholder: relayer keypair used until per-user agent keypairs are
-          // loaded from Supabase in issue 014.
-          return await sendPrivatePayment(loadRelayerKeypair(), recipient);
+          const supabase = getSupabaseAdmin();
+          const { data } = await supabase
+            .from("agents")
+            .select("encrypted_keypair")
+            .eq("user_id", userId)
+            .single();
+
+          if (!data?.encrypted_keypair) {
+            return { error: "Agent keypair not found. Please create an agent first." };
+          }
+
+          const encKey = process.env.AGENT_ENCRYPTION_KEY;
+          if (!encKey) throw new Error("AGENT_ENCRYPTION_KEY not set");
+          const secretKey = decrypt(data.encrypted_keypair, Buffer.from(encKey, "hex"));
+          const agentKeypair = Keypair.fromSecretKey(secretKey);
+
+          return await sendPrivatePayment(agentKeypair, recipient);
         },
       }),
+
+      payment_complete: tool({
+        description:
+          "Signal the UI to show the Done state with the Solscan link. Call this after send_private_payment returns a signature.",
+        parameters: z.object({
+          signature: z.string().describe("The redeem transaction signature"),
+        }),
+        execute: async ({ signature }) => ({ signature }),
+      }),
     },
-    maxSteps: 5,
+    maxSteps: 10,
   });
 }
