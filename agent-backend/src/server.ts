@@ -3,6 +3,9 @@ import express, { Request, Response } from "express";
 import cors from "cors";
 import { CoreMessage } from "ai";
 import { createAgentStream } from "./agent";
+import { bn254Ready } from "./lib/bn254-init"; // triggers WASM load at startup
+
+bn254Ready.catch((err) => console.error("BN254 init failed:", err));
 
 const app = express();
 const port = process.env.PORT ?? 4000;

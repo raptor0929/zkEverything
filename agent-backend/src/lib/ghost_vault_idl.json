@@ -1,0 +1,554 @@
+{
+  "address": "786pocjFvsLKLL4Ly5cYm2e5qsT4GMBvK21Cx97PWK1o",
+  "metadata": {
+    "name": "ghost_vault",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "NozKash GhostVault — prototype"
+  },
+  "instructions": [
+    {
+      "name": "announce",
+      "docs": [
+        "Post the mint's blind signature S' on-chain and advance state to Announced.",
+        "Permissionless: any fee payer may submit the blind signature."
+      ],
+      "discriminator": [
+        7,
+        30,
+        100,
+        250,
+        110,
+        253,
+        3,
+        149
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "deposit",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "deposit_id"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "_deposit_id",
+          "type": {
+            "array": [
+              "u8",
+              20
+            ]
+          }
+        },
+        {
+          "name": "mint_sig",
+          "type": {
+            "array": [
+              "u8",
+              64
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "deposit",
+      "docs": [
+        "Lock 0.01 SOL in the shared pool vault and register a blinded G1 point",
+        "for the deposit ID.  The deposit PDA no longer holds the denomination",
+        "— all SOL goes to the vault, so the redeem instruction has zero reference",
+        "to this account, eliminating the deposit-PDA lifecycle graph link."
+      ],
+      "discriminator": [
+        242,
+        35,
+        198,
+        137,
+        82,
+        225,
+        242,
+        182
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "deposit",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "deposit_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "_deposit_id",
+          "type": {
+            "array": [
+              "u8",
+              20
+            ]
+          }
+        },
+        {
+          "name": "blinded_point",
+          "type": {
+            "array": [
+              "u8",
+              64
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "initialize",
+      "docs": [
+        "Store the mint BLS public key and initialise the pool vault PDA."
+      ],
+      "discriminator": [
+        175,
+        175,
+        109,
+        31,
+        13,
+        152,
+        155,
+        237
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "mint_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "mint_pk",
+          "type": {
+            "array": [
+              "u8",
+              128
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "redeem",
+      "docs": [
+        "Redeem a token: verify ECDSA spend proof + BLS pairing, burn the nullifier,",
+        "and transfer DENOMINATION from the pool vault to the recipient.",
+        "",
+        "No deposit PDA is referenced — the redeem transaction has zero on-chain",
+        "link to any specific deposit.  Y = H(nullifier) is supplied by the caller;",
+        "the BLS pairing e(S, G2) == e(Y, PK) self-validates it.",
+        "",
+        "Parameters",
+        "----------",
+        "recipient     – Solana pubkey that receives the funds",
+        "spend_sig     – 65-byte secp256k1 signature: r(32) ‖ s(32) ‖ v(1), v = 27 or 28",
+        "nullifier     – 20-byte spend address (revealed here for the first time)",
+        "unblinded_sig – 64-byte unblinded BLS signature S = r⁻¹·S' (G1 point, EIP-197)",
+        "y_point       – 64-byte G1 point Y = H(spend_address), caller-supplied"
+      ],
+      "discriminator": [
+        184,
+        12,
+        86,
+        149,
+        70,
+        196,
+        97,
+        225
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "recipient_account",
+          "writable": true
+        },
+        {
+          "name": "mint_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "nullifier_record",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  117,
+                  108,
+                  108,
+                  105,
+                  102,
+                  105,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "nullifier"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "recipient",
+          "type": "pubkey"
+        },
+        {
+          "name": "spend_sig",
+          "type": {
+            "array": [
+              "u8",
+              65
+            ]
+          }
+        },
+        {
+          "name": "nullifier",
+          "type": {
+            "array": [
+              "u8",
+              20
+            ]
+          }
+        },
+        {
+          "name": "unblinded_sig",
+          "type": {
+            "array": [
+              "u8",
+              64
+            ]
+          }
+        },
+        {
+          "name": "y_point",
+          "type": {
+            "array": [
+              "u8",
+              64
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "DepositRecord",
+      "discriminator": [
+        83,
+        232,
+        10,
+        31,
+        251,
+        49,
+        189,
+        167
+      ]
+    },
+    {
+      "name": "MintState",
+      "discriminator": [
+        81,
+        17,
+        143,
+        120,
+        23,
+        57,
+        22,
+        117
+      ]
+    },
+    {
+      "name": "NullifierRecord",
+      "discriminator": [
+        56,
+        18,
+        57,
+        175,
+        69,
+        202,
+        189,
+        70
+      ]
+    },
+    {
+      "name": "VaultState",
+      "discriminator": [
+        228,
+        196,
+        82,
+        165,
+        98,
+        210,
+        235,
+        152
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "NotPending",
+      "msg": "Deposit is not in Pending state"
+    },
+    {
+      "code": 6001,
+      "name": "NotAnnounced",
+      "msg": "Deposit is not in Announced state"
+    },
+    {
+      "code": 6002,
+      "name": "InvalidECDSA",
+      "msg": "ECDSA recovery failed or address mismatch"
+    },
+    {
+      "code": 6003,
+      "name": "InvalidBLS",
+      "msg": "BLS pairing check failed"
+    },
+    {
+      "code": 6004,
+      "name": "InsufficientVaultBalance",
+      "msg": "Vault has insufficient balance"
+    }
+  ],
+  "types": [
+    {
+      "name": "DepositRecord",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "blinded_point",
+            "type": {
+              "array": [
+                "u8",
+                64
+              ]
+            }
+          },
+          {
+            "name": "mint_sig",
+            "type": {
+              "array": [
+                "u8",
+                64
+              ]
+            }
+          },
+          {
+            "name": "state",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MintState",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint_pk",
+            "type": {
+              "array": [
+                "u8",
+                128
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "NullifierRecord",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "VaultState",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ]
+}
