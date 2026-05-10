@@ -1,9 +1,5 @@
-// TODO: render Chat component (issue 009)
+import { Chat } from "./components/Chat";
 
 export default function Home() {
-  return (
-    <main>
-      <p>GhostVault Agent — coming soon</p>
-    </main>
-  );
+  return <Chat />;
 }
