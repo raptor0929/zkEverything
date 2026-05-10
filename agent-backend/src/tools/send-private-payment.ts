@@ -5,6 +5,7 @@ import { bn254Ready } from "../lib/bn254-init";
 import { serializeG1 } from "../lib/mint";
 import * as gl from "../lib/ghost-library";
 import { callDeposit, callAnnounce, callRedeem } from "../solana/client";
+import { mapError } from "../solana/errors";
 
 function loadMintSk(): mcl.Fr {
   const hex = process.env.MINT_SK;
@@ -14,7 +15,7 @@ function loadMintSk(): mcl.Fr {
   return fr;
 }
 
-export async function sendPrivatePayment(
+async function runPaymentFlow(
   recipientB58: string
 ): Promise<{ signature: string }> {
   await bn254Ready;
@@ -26,7 +27,6 @@ export async function sendPrivatePayment(
     throw new Error("Invalid recipient pubkey");
   }
 
-  // 1. Fresh ephemeral token secrets (new master seed per payment)
   const masterSeed = new Uint8Array(randomBytes(32));
   const secrets = gl.deriveTokenSecrets(masterSeed, 0);
   const depositId = secrets.blind.addressBytes;
@@ -34,17 +34,14 @@ export async function sendPrivatePayment(
   const r = gl.getR(secrets);
   const { Y, B } = gl.blindToken(secrets.spend.addressBytes, r);
 
-  // 2. Deposit — relayer keypair is payer; 0.01 SOL goes to shared vault
   const bBytes = serializeG1(B);
   await callDeposit(depositId, bBytes);
 
-  // 3. Announce — mint blind-signs B → S'
   const mintSk = loadMintSk();
   const sPrime = mcl.mul(B, mintSk) as mcl.G1;
   const sPrimeBytes = serializeG1(sPrime);
   await callAnnounce(depositId, sPrimeBytes);
 
-  // 4. Unblind S' → S and build ECDSA spend proof
   const S = gl.unblindSignature(sPrime, r);
   const sBytes = serializeG1(S);
   const yBytes = serializeG1(Y);
@@ -53,7 +50,6 @@ export async function sendPrivatePayment(
     recipientPubkey.toBytes()
   );
 
-  // 5. Redeem — relayer is payer; no deposit PDA referenced (privacy preserved)
   const signature = await callRedeem(
     recipientPubkey,
     sig65,
@@ -63,4 +59,15 @@ export async function sendPrivatePayment(
   );
 
   return { signature };
+}
+
+export async function sendPrivatePayment(
+  recipientB58: string
+): Promise<{ signature: string } | { error: string }> {
+  try {
+    return await runPaymentFlow(recipientB58);
+  } catch (err) {
+    console.error("[send-private-payment]", err);
+    return { error: mapError(err) };
+  }
 }

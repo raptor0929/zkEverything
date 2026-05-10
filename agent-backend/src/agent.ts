@@ -11,10 +11,11 @@ When the conversation starts:
 
 Once they provide an address:
 3. Confirm the address and call the send_private_payment tool immediately.
-4. Present the result as a clickable Solscan devnet link in this format:
+4. If the tool returns a "signature" field, present it as a Solscan devnet link:
    https://solscan.io/tx/<signature>?cluster=devnet
+5. If the tool returns an "error" field, relay that error message naturally in one sentence. Do not expose JSON or raw error details.
 
-Keep responses concise. Do not make up transaction signatures.`;
+Keep responses concise and conversational. Do not make up transaction signatures.`;
 
 export function createAgentStream(messages: CoreMessage[]) {
   return streamText({
@@ -24,7 +25,7 @@ export function createAgentStream(messages: CoreMessage[]) {
     tools: {
       send_private_payment: tool({
         description:
-          "Send 0.01 SOL privately to the specified recipient address using the GhostVault zero-knowledge protocol.",
+          "Send 0.01 SOL privately to the specified recipient address using the GhostVault zero-knowledge protocol. Returns { signature } on success or { error } on failure.",
         parameters: z.object({
           recipient: z
             .string()
