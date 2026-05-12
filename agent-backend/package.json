@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "ts-node-dev --respawn src/server.ts",
     "start": "node dist/server.js",
-    "build": "tsc",
+    "build": "tsc && mkdir -p dist/lib && cp src/lib/ghost_vault_idl.json dist/lib/",
     "typecheck": "tsc --noEmit",
     "test": "jest"
   },
