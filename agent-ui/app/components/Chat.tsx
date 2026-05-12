@@ -7,7 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:4000";
-const FUND_THRESHOLD = 10_000_000; // 0.01 SOL in lamports
+const FUND_AMOUNT = 10_000_000; // 0.01 SOL in lamports
 
 // ─── Step derivation ────────────────────────────────────────────────────────
 
@@ -94,7 +94,8 @@ export function Chat() {
   const [copied, setCopied] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const fundedRef = useRef(false);
+  const baselineRef = useRef<number | null>(null);
+  const detectedRef = useRef(false);
 
   const { messages, input, handleInputChange, handleSubmit, isLoading, append, setMessages } =
     useChat({ api: `${BACKEND}/api/chat`, fetch: authedFetch });
@@ -104,33 +105,44 @@ export function Chat() {
 
   const step = deriveStep(messages);
 
-  // Balance polling — active only during show_funding_address
+  // Poll for incoming funds — snapshot baseline first, trigger on delta >= 0.01 SOL
   useEffect(() => {
     if (step.type !== "show_funding_address") {
       if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
-      fundedRef.current = false;
+      baselineRef.current = null;
+      detectedRef.current = false;
       return;
     }
     if (pollingRef.current) return;
 
-    fundedRef.current = false;
-    pollingRef.current = setInterval(async () => {
-      if (fundedRef.current) return;
+    detectedRef.current = false;
+
+    async function getBalance(): Promise<number | null> {
       try {
         const { data: { session } } = await supabase.auth.getSession();
-        if (!session) return;
+        if (!session) return null;
         const res = await fetch(`${BACKEND}/api/agent/balance`, {
           headers: { Authorization: `Bearer ${session.access_token}` },
         });
-        if (!res.ok) return;
+        if (!res.ok) return null;
         const { lamports } = (await res.json()) as { lamports: number };
-        if (lamports >= FUND_THRESHOLD) {
-          fundedRef.current = true;
-          clearInterval(pollingRef.current!);
-          pollingRef.current = null;
-          appendRef.current({ role: "user", content: "funds received" });
-        }
-      } catch { /* retry next tick */ }
+        return lamports;
+      } catch { return null; }
+    }
+
+    // Snapshot current balance before starting to poll
+    getBalance().then((bal) => { baselineRef.current = bal ?? 0; });
+
+    pollingRef.current = setInterval(async () => {
+      if (detectedRef.current) return;
+      const bal = await getBalance();
+      if (bal === null || baselineRef.current === null) return;
+      if (bal >= baselineRef.current + FUND_AMOUNT) {
+        detectedRef.current = true;
+        clearInterval(pollingRef.current!);
+        pollingRef.current = null;
+        appendRef.current({ role: "user", content: "funds received" });
+      }
     }, 2000);
 
     return () => {
@@ -144,7 +156,6 @@ export function Chat() {
 
   const handleCancel = useCallback(() => {
     if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
-    fundedRef.current = false;
     setMessages([]);
   }, [setMessages]);
 
@@ -154,9 +165,9 @@ export function Chat() {
     setTimeout(() => setCopied(false), 1500);
   }, []);
 
-  const inputDisabled = isLoading || step.type === "show_funding_address" || step.type === "processing";
-  const showCancel = messages.length > 0 && step.type !== "processing" && step.type !== "done" && !isLoading;
-  const showInput = step.type !== "processing" && step.type !== "done";
+  const inputDisabled = isLoading || step.type === "processing";
+  const showCancel = messages.length > 0 && step.type !== "processing" && step.type !== "done" && step.type !== "show_funding_address" && !isLoading;
+  const showInput = step.type !== "processing" && step.type !== "done" && step.type !== "show_funding_address";
   const isIdle = messages.length === 0 && !isLoading;
 
   return (
@@ -231,6 +242,15 @@ export function Chat() {
 
       {/* Bottom area */}
       <div style={bottomAreaStyle}>
+        {step.type === "show_funding_address" && !isLoading && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+            <div style={waitingPillStyle}>
+              <span style={spinnerStyle}>···</span>&ensp;Waiting for deposit…
+            </div>
+            <button type="button" onClick={handleCancel} style={cancelBtnStyle}>✕</button>
+          </div>
+        )}
+
         {step.type === "processing" && (
           <div style={processingPillStyle}>
             <span style={spinnerStyle}>···</span>&ensp;Processing
@@ -258,9 +278,7 @@ export function Chat() {
               onChange={handleInputChange}
               disabled={inputDisabled}
               placeholder={
-                step.type === "show_funding_address" ? "Waiting for funds…"
-                  : step.type === "collect_destination" ? "Paste Solana address…"
-                  : "Type a message…"
+                step.type === "collect_destination" ? "Paste Solana address…" : "Type a message…"
               }
               style={inputStyle(inputDisabled)}
             />
@@ -307,6 +325,8 @@ function ToolUI({ inv, copied, onCopy }: {
   copied: boolean;
   onCopy: (text: string) => void;
 }) {
+  const [addressRevealed, setAddressRevealed] = useState(false);
+
   if (inv.toolName === "collect_destination" && inv.state === "result") {
     return (
       <div style={rowStyle("left")}>
@@ -316,10 +336,19 @@ function ToolUI({ inv, copied, onCopy }: {
   }
   if (inv.toolName === "show_funding_address" && inv.state === "result") {
     const r = inv.result as { agentPubkey: string; amountSol: number };
+    if (!addressRevealed) {
+      return (
+        <div style={rowStyle("left")}>
+          <button onClick={() => setAddressRevealed(true)} style={amountBtnStyle}>
+            {r.amountSol} SOL
+          </button>
+        </div>
+      );
+    }
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         <div style={rowStyle("left")}>
-          <div style={bubbleStyle("yellow")}>Fund me here · {r.amountSol} SOL</div>
+          <div style={bubbleStyle("green")}>{r.amountSol} SOL</div>
         </div>
         <div style={rowStyle("left")}>
           <div style={{ ...bubbleStyle("blue"), display: "flex", alignItems: "center", gap: 8, fontFamily: "monospace", fontSize: "0.78rem" }}>
@@ -402,11 +431,12 @@ function rowStyle(align: "left" | "right"): React.CSSProperties {
   };
 }
 
-function bubbleStyle(color: "white" | "blue" | "yellow"): React.CSSProperties {
+function bubbleStyle(color: "white" | "blue" | "yellow" | "green"): React.CSSProperties {
   const map = {
-    white: { background: "#1e1e1e", color: "#f0f0f0" },
-    blue:  { background: "#2563eb", color: "#fff" },
-    yellow:{ background: "#fbbf24", color: "#1a1a1a" },
+    white:  { background: "#1e1e1e", color: "#f0f0f0" },
+    blue:   { background: "#2563eb", color: "#fff" },
+    yellow: { background: "#fbbf24", color: "#1a1a1a" },
+    green:  { background: "#22c55e", color: "#fff" },
   };
   return {
     maxWidth: "88%",
@@ -501,6 +531,29 @@ const donePillStyle: React.CSSProperties = {
   color: "#fff",
   fontWeight: 700,
   fontSize: "1rem",
+};
+
+const amountBtnStyle: React.CSSProperties = {
+  padding: "14px 28px",
+  borderRadius: 16,
+  border: "none",
+  background: "#22c55e",
+  color: "#fff",
+  fontWeight: 700,
+  fontSize: "1.1rem",
+  cursor: "pointer",
+  touchAction: "manipulation",
+  letterSpacing: "0.02em",
+};
+
+const waitingPillStyle: React.CSSProperties = {
+  flex: 1,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: "13px 0",
+  color: "#888",
+  fontSize: "0.9rem",
 };
 
 const copyBtnStyle: React.CSSProperties = {
