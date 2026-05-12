@@ -55,7 +55,7 @@ router.post("/create", requireAuth, async (req: Request, res: Response) => {
       SystemProgram.transfer({
         fromPubkey: relayerKeypair.publicKey,
         toPubkey: keypair.publicKey,
-        lamports: 1_000_000,
+        lamports: 5_000_000,
       })
     );
     const { blockhash } = await connection.getLatestBlockhash("confirmed");

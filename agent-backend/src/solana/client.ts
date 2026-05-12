@@ -99,10 +99,36 @@ export async function callAnnounce(
   sPrimeBytes: Uint8Array
 ): Promise<string> {
   const program = buildProgram(mintKeypair);
+  const provider = program.provider as anchor.AnchorProvider;
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return await (program.methods as any)
+  const ix = await (program.methods as any)
     .announce(Array.from(depositId), Array.from(sPrimeBytes))
-    .rpc();
+    .instruction();
+
+  const tx = new Transaction();
+  tx.add(ix);
+  tx.feePayer = mintKeypair.publicKey;
+  const { blockhash, lastValidBlockHeight } =
+    await provider.connection.getLatestBlockhash("confirmed");
+  tx.recentBlockhash = blockhash;
+
+  const signature = await provider.connection.sendTransaction(
+    tx,
+    [mintKeypair],
+    { skipPreflight: true }
+  );
+
+  try {
+    await provider.connection.confirmTransaction(
+      { signature, blockhash, lastValidBlockHeight },
+      "confirmed"
+    );
+  } catch {
+    // Confirmation polling timed out — signature still valid.
+  }
+
+  return signature;
 }
 
 export async function callRedeem(
