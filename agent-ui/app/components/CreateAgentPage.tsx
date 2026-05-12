@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Image from "next/image";
 import { supabase } from "../lib/supabase";
 import { apiFetch } from "../lib/api";
@@ -9,12 +9,27 @@ interface Props {
   onCreated: () => void;
 }
 
+type LoadingStep = null | "keypair" | "funding";
+
+const STEP_LABELS: Record<NonNullable<LoadingStep>, string> = {
+  keypair: "Generating wallet keypair…",
+  funding: "Funding wallet on-chain…",
+};
+
 export function CreateAgentPage({ onCreated }: Props) {
-  const [loading, setLoading] = useState(false);
+  const [loadingStep, setLoadingStep] = useState<LoadingStep>(null);
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    if (loadingStep === "keypair") {
+      timer = setTimeout(() => setLoadingStep("funding"), 300);
+    }
+    return () => clearTimeout(timer);
+  }, [loadingStep]);
+
   async function handleCreate() {
-    setLoading(true);
+    setLoadingStep("keypair");
     setError(null);
     try {
       const {
@@ -22,7 +37,7 @@ export function CreateAgentPage({ onCreated }: Props) {
       } = await supabase.auth.getSession();
       if (!session) {
         setError("Session expired. Please log in again.");
-        setLoading(false);
+        setLoadingStep(null);
         return;
       }
       const res = await apiFetch("/api/agent/create", session.access_token, {
@@ -30,15 +45,17 @@ export function CreateAgentPage({ onCreated }: Props) {
       });
       if (!res.ok) {
         setError("Failed to create agent. Please try again.");
-        setLoading(false);
+        setLoadingStep(null);
         return;
       }
       onCreated();
     } catch {
       setError("Something went wrong. Please try again.");
-      setLoading(false);
+      setLoadingStep(null);
     }
   }
+
+  const isLoading = loadingStep !== null;
 
   return (
     <div style={centeredLayout}>
@@ -53,10 +70,20 @@ export function CreateAgentPage({ onCreated }: Props) {
         height={180}
         style={{ marginBottom: 32 }}
       />
-      <button onClick={handleCreate} disabled={loading} style={greenButton(loading)}>
-        {loading ? "Creating…" : "Create Agent"}
+      <button onClick={handleCreate} disabled={isLoading} style={greenButton(isLoading)}>
+        {isLoading ? (
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={spinnerStyle} />
+            {STEP_LABELS[loadingStep!]}
+          </span>
+        ) : (
+          "Create Agent"
+        )}
       </button>
       {error && <p style={{ color: "#f87171", marginTop: 12, fontSize: "0.9rem" }}>{error}</p>}
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+      `}</style>
     </div>
   );
 }
@@ -107,5 +134,17 @@ function greenButton(disabled: boolean): React.CSSProperties {
     cursor: disabled ? "not-allowed" : "pointer",
     opacity: disabled ? 0.6 : 1,
     letterSpacing: "0.02em",
+    minWidth: 220,
   };
 }
+
+const spinnerStyle: React.CSSProperties = {
+  display: "inline-block",
+  width: 14,
+  height: 14,
+  border: "2px solid rgba(255,255,255,0.3)",
+  borderTopColor: "#fff",
+  borderRadius: "50%",
+  animation: "spin 0.7s linear infinite",
+  flexShrink: 0,
+};

@@ -41,16 +41,15 @@ async function runPaymentFlow(
   const r = gl.getR(secrets);
   const { Y, B } = gl.blindToken(secrets.spend.addressBytes, r);
 
+  const relayerKeypair = loadRelayerKeypair();
   const bBytes = serializeG1(B);
-  await callDeposit(agentKeypair, depositId, bBytes);
+  await callDeposit(agentKeypair, relayerKeypair, depositId, bBytes);
 
   const mintKeypair = loadMintKeypair();
   const mintSk = loadMintSk();
   const sPrime = mcl.mul(B, mintSk) as mcl.G1;
   const sPrimeBytes = serializeG1(sPrime);
   await callAnnounce(mintKeypair, depositId, sPrimeBytes);
-
-  const relayerKeypair = loadRelayerKeypair();
   const S = gl.unblindSignature(sPrime, r);
   const sBytes = serializeG1(S);
   const yBytes = serializeG1(Y);

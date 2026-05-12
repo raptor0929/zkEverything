@@ -14,7 +14,6 @@ const FUND_THRESHOLD = 10_000_000; // 0.01 SOL in lamports
 type Step =
   | { type: "idle" }
   | { type: "collect_destination" }
-  | { type: "collect_amount" }
   | { type: "show_funding_address"; agentPubkey: string; amountSol: number }
   | { type: "processing" }
   | { type: "done"; signature: string }
@@ -45,9 +44,6 @@ function deriveStep(messages: Message[]): Step {
       if (inv.toolName === "show_funding_address" && inv.state === "result") {
         const r = inv.result as { agentPubkey: string; amountSol: number };
         return { type: "show_funding_address", agentPubkey: r.agentPubkey, amountSol: r.amountSol };
-      }
-      if (inv.toolName === "collect_amount" && inv.state === "result") {
-        return { type: "collect_amount" };
       }
       if (inv.toolName === "collect_destination" && inv.state === "result") {
         return { type: "collect_destination" };
@@ -152,10 +148,6 @@ export function Chat() {
     setMessages([]);
   }, [setMessages]);
 
-  const handleAmountSelect = useCallback((label: string) => {
-    append({ role: "user", content: label });
-  }, [append]);
-
   const handleCopy = useCallback((text: string) => {
     copyText(text);
     setCopied(true);
@@ -217,10 +209,7 @@ export function Chat() {
                   <ToolUI
                     key={i}
                     inv={inv}
-                    step={step}
-                    isLoading={isLoading}
                     copied={copied}
-                    onAmountSelect={handleAmountSelect}
                     onCopy={handleCopy}
                   />
                 ))}
@@ -313,35 +302,15 @@ export function Chat() {
 
 // ─── Tool UI ─────────────────────────────────────────────────────────────────
 
-function ToolUI({ inv, step, isLoading, copied, onAmountSelect, onCopy }: {
+function ToolUI({ inv, copied, onCopy }: {
   inv: { toolName: string; state: string; result?: unknown };
-  step: Step;
-  isLoading: boolean;
   copied: boolean;
-  onAmountSelect: (label: string) => void;
   onCopy: (text: string) => void;
 }) {
   if (inv.toolName === "collect_destination" && inv.state === "result") {
     return (
       <div style={rowStyle("left")}>
         <div style={bubbleStyle("yellow")}>write your destination address</div>
-      </div>
-    );
-  }
-  if (inv.toolName === "collect_amount" && inv.state === "result") {
-    const active = step.type === "collect_amount" && !isLoading;
-    return (
-      <div style={{ ...rowStyle("left"), gap: 8, flexWrap: "wrap" }}>
-        {["1 SOL", "0.1 SOL", "0.01 SOL"].map((label) => (
-          <button
-            key={label}
-            disabled={!active}
-            onClick={() => active && onAmountSelect(label)}
-            style={amountBtnStyle(!active)}
-          >
-            {label}
-          </button>
-        ))}
       </div>
     );
   }
@@ -514,21 +483,6 @@ const cancelBtnStyle: React.CSSProperties = {
   touchAction: "manipulation",
   whiteSpace: "nowrap",
 };
-
-function amountBtnStyle(disabled: boolean): React.CSSProperties {
-  return {
-    padding: "11px 18px",
-    borderRadius: 10,
-    border: "none",
-    background: "#fbbf24",
-    color: "#1a1a1a",
-    fontWeight: 700,
-    fontSize: "0.9rem",
-    cursor: disabled ? "not-allowed" : "pointer",
-    opacity: disabled ? 0.5 : 1,
-    touchAction: "manipulation",
-  };
-}
 
 const processingPillStyle: React.CSSProperties = {
   display: "flex",

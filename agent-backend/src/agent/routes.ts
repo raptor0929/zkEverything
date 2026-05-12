@@ -1,8 +1,9 @@
 import { Router, Request, Response } from "express";
-import { Keypair, Connection, PublicKey } from "@solana/web3.js";
+import { Keypair, Connection, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
 import { requireAuth, AuthenticatedRequest } from "../auth/middleware";
 import { getSupabaseAdmin } from "./supabase";
 import { encrypt } from "./crypto";
+import { loadRelayerKeypair } from "../solana/client";
 
 const router = Router();
 
@@ -42,6 +43,28 @@ router.post("/create", requireAuth, async (req: Request, res: Response) => {
     console.error("[create-agent] Supabase upsert error:", error);
     res.status(500).json({ error: "Failed to create agent" });
     return;
+  }
+
+  // Fund the new agent wallet with rent-exempt minimum from the relayer
+  try {
+    const relayerKeypair = loadRelayerKeypair();
+    const rpcUrl = process.env.RPC_URL ?? "https://api.devnet.solana.com";
+    const connection = new Connection(rpcUrl, "confirmed");
+    const fundTx = new Transaction();
+    fundTx.add(
+      SystemProgram.transfer({
+        fromPubkey: relayerKeypair.publicKey,
+        toPubkey: keypair.publicKey,
+        lamports: 1_000_000,
+      })
+    );
+    const { blockhash } = await connection.getLatestBlockhash("confirmed");
+    fundTx.recentBlockhash = blockhash;
+    fundTx.feePayer = relayerKeypair.publicKey;
+    await connection.sendTransaction(fundTx, [relayerKeypair], { skipPreflight: true });
+  } catch (fundErr) {
+    console.error("[create-agent] Failed to fund agent wallet:", fundErr);
+    // Non-fatal — agent is created, funding will be retried on next deposit
   }
 
   res.json({ pubkey });

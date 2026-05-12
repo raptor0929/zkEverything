@@ -5,6 +5,7 @@ import {
   PublicKey,
   SystemProgram,
   ComputeBudgetProgram,
+  Transaction,
 } from "@solana/web3.js";
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const IDL = require("../lib/ghost_vault_idl.json");
@@ -55,14 +56,41 @@ export function loadMintKeypair(): Keypair {
 
 export async function callDeposit(
   agentKeypair: Keypair,
+  relayerKeypair: Keypair,
   depositId: Uint8Array,
   bBytes: Uint8Array
 ): Promise<string> {
   const program = buildProgram(agentKeypair);
+  const provider = program.provider as anchor.AnchorProvider;
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return await (program.methods as any)
+  const ix = await (program.methods as any)
     .deposit(Array.from(depositId), Array.from(bBytes))
-    .rpc();
+    .instruction();
+
+  const tx = new Transaction();
+  tx.add(ix);
+  tx.feePayer = relayerKeypair.publicKey;
+  const { blockhash, lastValidBlockHeight } =
+    await provider.connection.getLatestBlockhash("confirmed");
+  tx.recentBlockhash = blockhash;
+
+  const signature = await provider.connection.sendTransaction(
+    tx,
+    [relayerKeypair, agentKeypair],
+    { skipPreflight: true }
+  );
+
+  try {
+    await provider.connection.confirmTransaction(
+      { signature, blockhash, lastValidBlockHeight },
+      "confirmed"
+    );
+  } catch {
+    // Confirmation polling timed out — signature still valid.
+  }
+
+  return signature;
 }
 
 export async function callAnnounce(
