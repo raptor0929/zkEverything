@@ -351,11 +351,14 @@ function ToolUI({ inv, copied, onCopy }: {
           <div style={bubbleStyle("green")}>{r.amountSol} SOL</div>
         </div>
         <div style={rowStyle("left")}>
-          <div style={{ ...bubbleStyle("blue"), display: "flex", alignItems: "center", gap: 8, fontFamily: "monospace", fontSize: "0.78rem" }}>
-            <span style={{ flex: 1, wordBreak: "break-all" }}>{r.agentPubkey}</span>
-            <button onClick={() => onCopy(r.agentPubkey)} title="Copy" style={copyBtnStyle}>
-              {copied ? "✓" : "⧉"}
-            </button>
+          <div style={{ ...bubbleStyle("blue"), display: "flex", flexDirection: "column", gap: 6, fontSize: "0.78rem" }}>
+            <span style={{ color: "rgba(255,255,255,0.7)", fontSize: "0.72rem" }}>Send the funds to the wallet of the agent:</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: "monospace" }}>
+              <span style={{ flex: 1, wordBreak: "break-all" }}>{r.agentPubkey}</span>
+              <button onClick={() => onCopy(r.agentPubkey)} title="Copy" style={copyBtnStyle}>
+                {copied ? "✓" : "⧉"}
+              </button>
+            </div>
           </div>
         </div>
       </div>

@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 export const metadata: Metadata = {
   title: "zkEverything",
   description: "Privacy-preserving SOL transfers on Solana devnet",
+  icons: { icon: "/logo-black.png" },
 };
 
 export default function RootLayout({
